@@ -46,5 +46,6 @@ if xvfb_run.found()
     dependencies: [llmghost_dep],
     install: false,
   )
-  test('controller', test_controller, suite: 'gui')
+  # Wrap just this test in xvfb-run, so the unit suite needs no display.
+  test('controller', xvfb_run, args: ['-a', test_controller], suite: 'gui')
 endif
