@@ -633,12 +633,28 @@ on_view_key_press (GtkWidget *widget, GdkEventKey *event, gpointer user_data)
   if (!self->overlay_visible)
     return GDK_EVENT_PROPAGATE;
 
+  guint mods = event->state & gtk_accelerator_get_default_mod_mask ();
+
   switch (event->keyval)
     {
     case GDK_KEY_Tab:
     case GDK_KEY_KP_Tab:
       accept_ghost (self);
       return GDK_EVENT_STOP;
+
+    case GDK_KEY_Right:
+    case GDK_KEY_KP_Right:
+      if (mods == 0)
+        {
+          accept_ghost_prefix (self, _llm_ghost_controller_next_char_len (self->current_ghost));
+          return GDK_EVENT_STOP;
+        }
+      if (mods == GDK_CONTROL_MASK)
+        {
+          accept_ghost_prefix (self, _llm_ghost_controller_next_word_len (self->current_ghost));
+          return GDK_EVENT_STOP;
+        }
+      return GDK_EVENT_PROPAGATE;
 
     case GDK_KEY_Escape:
       cancel_in_flight (self);
