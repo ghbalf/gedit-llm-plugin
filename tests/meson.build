@@ -28,3 +28,13 @@ test_fake_backend = executable(
   install: false,
 )
 test('fake-backend', test_fake_backend, suite: 'unit')
+
+mock_backend_sources = files('mock-backend.c')
+
+test_mock_backend = executable(
+  'test-mock-backend',
+  ['test-mock-backend.c', mock_backend_sources],
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('mock-backend', test_mock_backend, suite: 'unit')
