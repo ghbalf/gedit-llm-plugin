@@ -38,3 +38,13 @@ test_mock_backend = executable(
   install: false,
 )
 test('mock-backend', test_mock_backend, suite: 'unit')
+
+if xvfb_run.found()
+  test_controller = executable(
+    'test-controller',
+    ['test-controller.c', mock_backend_sources],
+    dependencies: [llmghost_dep],
+    install: false,
+  )
+  test('controller', test_controller, suite: 'gui')
+endif
