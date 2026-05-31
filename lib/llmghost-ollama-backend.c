@@ -1,0 +1,298 @@
+#include "llmghost-ollama-backend.h"
+
+#include <libsoup/soup.h>
+#include <json-glib/json-glib.h>
+#include <string.h>
+
+#define DEFAULT_HOST         "spark-2448"
+#define DEFAULT_PORT         11434
+#define DEFAULT_MODEL        "qwen3-coder-next:latest"
+#define DEFAULT_NUM_PREDICT  64
+#define DEFAULT_TEMPERATURE  0.2
+#define REQUEST_TIMEOUT_SEC  30
+
+struct _LlmGhostOllamaBackend
+{
+  GObject             parent_instance;
+
+  SoupSession        *session;
+  char               *host;
+  guint16             port;
+  char               *model;
+  LlmGhostFimTokens  *fim_tokens;   /* never NULL after init */
+
+  guint               num_predict;
+  double              temperature;
+};
+
+static void llm_ghost_ollama_backend_iface_init (LlmGhostBackendInterface *iface);
+
+G_DEFINE_TYPE_WITH_CODE (LlmGhostOllamaBackend, llm_ghost_ollama_backend, G_TYPE_OBJECT,
+                         G_IMPLEMENT_INTERFACE (LLM_GHOST_TYPE_BACKEND,
+                                                llm_ghost_ollama_backend_iface_init))
+
+/* ---- request body builder ----------------------------------------------- */
+
+static char *
+build_request_body (const char              *model,
+                    const LlmGhostFimTokens *tokens,
+                    const char              *prefix,
+                    const char              *suffix,
+                    guint                    num_predict,
+                    double                   temperature)
+{
+  /* Bypass Ollama's prompt-template layer with raw=true and inject the
+   * configured family's FIM sentinels directly. Works on models whose
+   * Modelfile registers no `insert` template (the common case). */
+  char *fim = g_strconcat (tokens->prefix_tok, prefix ? prefix : "",
+                           tokens->suffix_tok, suffix ? suffix : "",
+                           tokens->middle_tok, NULL);
+
+  JsonBuilder *b = json_builder_new ();
+
+  json_builder_begin_object (b);
+
+  json_builder_set_member_name (b, "model");
+  json_builder_add_string_value (b, model);
+
+  json_builder_set_member_name (b, "prompt");
+  json_builder_add_string_value (b, fim);
+
+  json_builder_set_member_name (b, "raw");
+  json_builder_add_boolean_value (b, TRUE);
+
+  json_builder_set_member_name (b, "stream");
+  json_builder_add_boolean_value (b, FALSE);
+
+  json_builder_set_member_name (b, "options");
+  json_builder_begin_object (b);
+
+  json_builder_set_member_name (b, "num_predict");
+  json_builder_add_int_value (b, num_predict);
+
+  json_builder_set_member_name (b, "temperature");
+  json_builder_add_double_value (b, temperature);
+
+  json_builder_set_member_name (b, "stop");
+  json_builder_begin_array (b);
+  /* Newline forces single-line completion (phase 2). The remaining stops
+   * are family-specific sentinel tokens that should never leak into the
+   * response. */
+  json_builder_add_string_value (b, "\n");
+  for (gsize i = 0; tokens->stop_tokens != NULL && tokens->stop_tokens[i] != NULL; i++)
+    json_builder_add_string_value (b, tokens->stop_tokens[i]);
+  json_builder_end_array (b);
+
+  json_builder_end_object (b); /* options */
+  json_builder_end_object (b); /* root */
+
+  JsonGenerator *gen = json_generator_new ();
+  json_generator_set_root (gen, json_builder_get_root (b));
+  char *body = json_generator_to_data (gen, NULL);
+
+  g_object_unref (gen);
+  g_object_unref (b);
+  g_free (fim);
+
+  return body;
+}
+
+/* ---- async response handler --------------------------------------------- */
+
+static void
+on_libsoup_response (GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  GTask        *task    = G_TASK (user_data);
+  SoupSession  *session = SOUP_SESSION (source);
+  SoupMessage  *msg     = SOUP_MESSAGE (g_task_get_task_data (task));
+  GError       *error   = NULL;
+
+  GBytes *body = soup_session_send_and_read_finish (session, result, &error);
+
+  if (error != NULL)
+    {
+      g_task_return_error (task, error);
+      g_object_unref (task);
+      return;
+    }
+
+  SoupStatus status = soup_message_get_status (msg);
+  if (status != SOUP_STATUS_OK)
+    {
+      gsize n = 0;
+      const char *snippet = body ? g_bytes_get_data (body, &n) : NULL;
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                               "ollama HTTP %u: %.*s", (unsigned) status,
+                               (int) MIN (n, 256u),
+                               snippet ? snippet : "");
+      g_clear_pointer (&body, g_bytes_unref);
+      g_object_unref (task);
+      return;
+    }
+
+  gsize len = 0;
+  const char *data = g_bytes_get_data (body, &len);
+
+  JsonParser *parser = json_parser_new ();
+  if (!json_parser_load_from_data (parser, data, (gssize) len, &error))
+    {
+      g_task_return_error (task, error);
+      g_object_unref (parser);
+      g_bytes_unref (body);
+      g_object_unref (task);
+      return;
+    }
+
+  JsonNode *root = json_parser_get_root (parser);
+  if (root == NULL || !JSON_NODE_HOLDS_OBJECT (root))
+    {
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                               "ollama: malformed JSON response");
+      g_object_unref (parser);
+      g_bytes_unref (body);
+      g_object_unref (task);
+      return;
+    }
+
+  JsonObject *obj = json_node_get_object (root);
+
+  if (json_object_has_member (obj, "error"))
+    {
+      const char *err = json_object_get_string_member (obj, "error");
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                               "ollama: %s", err ? err : "(no message)");
+      g_object_unref (parser);
+      g_bytes_unref (body);
+      g_object_unref (task);
+      return;
+    }
+
+  const char *response = json_object_has_member (obj, "response")
+                             ? json_object_get_string_member (obj, "response")
+                             : "";
+  char *out = g_strdup (response ? response : "");
+
+  g_object_unref (parser);
+  g_bytes_unref (body);
+
+  g_task_return_pointer (task, out, g_free);
+  g_object_unref (task);
+}
+
+/* ---- LlmGhostBackend interface ------------------------------------------ */
+
+static void
+ollama_request (LlmGhostBackend     *backend,
+                const char          *prefix,
+                const char          *suffix,
+                GCancellable        *cancellable,
+                GAsyncReadyCallback  callback,
+                gpointer             user_data)
+{
+  LlmGhostOllamaBackend *self = LLM_GHOST_OLLAMA_BACKEND (backend);
+  GTask *task = g_task_new (self, cancellable, callback, user_data);
+
+  char *url = g_strdup_printf ("http://%s:%u/api/generate",
+                               self->host, (unsigned) self->port);
+  SoupMessage *msg = soup_message_new (SOUP_METHOD_POST, url);
+  g_free (url);
+
+  if (msg == NULL)
+    {
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                               "invalid Ollama URL");
+      g_object_unref (task);
+      return;
+    }
+
+  char *body = build_request_body (self->model, self->fim_tokens,
+                                   prefix, suffix,
+                                   self->num_predict, self->temperature);
+  GBytes *bytes = g_bytes_new_take (body, strlen (body));
+  soup_message_set_request_body_from_bytes (msg, "application/json", bytes);
+  g_bytes_unref (bytes);
+
+  /* Keep the SoupMessage alive until the response handler reads its status. */
+  g_task_set_task_data (task, msg, g_object_unref);
+
+  soup_session_send_and_read_async (self->session,
+                                    msg,
+                                    G_PRIORITY_DEFAULT,
+                                    cancellable,
+                                    on_libsoup_response,
+                                    task);
+}
+
+static char *
+ollama_request_finish (LlmGhostBackend  *backend,
+                       GAsyncResult     *result,
+                       GError          **error)
+{
+  (void) backend;
+  return g_task_propagate_pointer (G_TASK (result), error);
+}
+
+static void
+llm_ghost_ollama_backend_iface_init (LlmGhostBackendInterface *iface)
+{
+  iface->request        = ollama_request;
+  iface->request_finish = ollama_request_finish;
+}
+
+/* ---- Public API --------------------------------------------------------- */
+
+void
+llm_ghost_ollama_backend_set_fim_tokens (LlmGhostOllamaBackend   *self,
+                                         const LlmGhostFimTokens *tokens)
+{
+  g_return_if_fail (LLM_GHOST_IS_OLLAMA_BACKEND (self));
+
+  const LlmGhostFimTokens *src = tokens != NULL
+                                   ? tokens
+                                   : llm_ghost_fim_tokens_qwen ();
+  g_clear_pointer (&self->fim_tokens, llm_ghost_fim_tokens_free);
+  self->fim_tokens = llm_ghost_fim_tokens_copy (src);
+}
+
+/* ---- GObject lifecycle --------------------------------------------------- */
+
+static void
+llm_ghost_ollama_backend_finalize (GObject *object)
+{
+  LlmGhostOllamaBackend *self = LLM_GHOST_OLLAMA_BACKEND (object);
+  g_clear_object  (&self->session);
+  g_clear_pointer (&self->host,       g_free);
+  g_clear_pointer (&self->model,      g_free);
+  g_clear_pointer (&self->fim_tokens, llm_ghost_fim_tokens_free);
+  G_OBJECT_CLASS (llm_ghost_ollama_backend_parent_class)->finalize (object);
+}
+
+static void
+llm_ghost_ollama_backend_class_init (LlmGhostOllamaBackendClass *klass)
+{
+  G_OBJECT_CLASS (klass)->finalize = llm_ghost_ollama_backend_finalize;
+}
+
+static void
+llm_ghost_ollama_backend_init (LlmGhostOllamaBackend *self)
+{
+  self->session = soup_session_new ();
+  soup_session_set_timeout (self->session, REQUEST_TIMEOUT_SEC);
+  self->num_predict = DEFAULT_NUM_PREDICT;
+  self->temperature = DEFAULT_TEMPERATURE;
+  self->fim_tokens  = llm_ghost_fim_tokens_copy (llm_ghost_fim_tokens_qwen ());
+}
+
+LlmGhostBackend *
+llm_ghost_ollama_backend_new (const char *host,
+                              guint16     port,
+                              const char *model)
+{
+  LlmGhostOllamaBackend *self = g_object_new (LLM_GHOST_TYPE_OLLAMA_BACKEND, NULL);
+
+  self->host  = g_strdup ((host  && *host)  ? host  : DEFAULT_HOST);
+  self->port  = port ? port : DEFAULT_PORT;
+  self->model = g_strdup ((model && *model) ? model : DEFAULT_MODEL);
+
+  return LLM_GHOST_BACKEND (self);
+}

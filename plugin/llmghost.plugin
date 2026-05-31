@@ -1,0 +1,9 @@
+[Plugin]
+Loader=C
+Module=llmghost
+IAge=3
+Name=LLM Ghost Completion
+Description=Inline ghost-text completion via local Ollama (Supermaven-style FIM).
+Authors=Alfred Mickautsch <alfred@mickautsch.de>
+Copyright=Copyright © 2026 Alfred Mickautsch
+Version=0.1.0
