@@ -1,5 +1,6 @@
 #include "llmghost-controller.h"
 #include "llmghost-overlay.h"
+#include "llmghost-controller-internal.h"
 
 #include <gdk/gdkkeysyms.h>
 
@@ -533,6 +534,48 @@ hide_ghost (LlmGhostController *self)
       gtk_widget_hide (GTK_WIDGET (self->overlay));
       self->overlay_visible = FALSE;
     }
+}
+
+/* ---- ghost-acceptance boundary helpers (exposed for tests) -------------- */
+
+gsize
+_llm_ghost_controller_next_char_len (const char *ghost)
+{
+  if (ghost == NULL || *ghost == '\0')
+    return 0;
+  return (gsize) (g_utf8_next_char (ghost) - ghost);
+}
+
+gsize
+_llm_ghost_controller_next_word_len (const char *ghost)
+{
+  if (ghost == NULL || *ghost == '\0')
+    return 0;
+
+  const char *p = ghost;
+  while (*p != '\0' && g_unichar_isspace (g_utf8_get_char (p)))   /* leading whitespace */
+    p = g_utf8_next_char (p);
+
+  if (*p != '\0')
+    {
+      gunichar c = g_utf8_get_char (p);
+      if (g_unichar_isalnum (c) || c == '_')                      /* run of word chars */
+        {
+          while (*p != '\0')
+            {
+              gunichar w = g_utf8_get_char (p);
+              if (!g_unichar_isalnum (w) && w != '_')
+                break;
+              p = g_utf8_next_char (p);
+            }
+        }
+      else                                                        /* single punctuation char */
+        {
+          p = g_utf8_next_char (p);
+        }
+    }
+
+  return (gsize) (p - ghost);
 }
 
 /* ---- key handling -------------------------------------------------------- */
