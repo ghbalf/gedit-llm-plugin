@@ -1,4 +1,5 @@
 #include "llmghost-ollama-backend.h"
+#include "llmghost-ollama-backend-internal.h"
 
 #include <libsoup/soup.h>
 #include <json-glib/json-glib.h>
@@ -33,13 +34,13 @@ G_DEFINE_TYPE_WITH_CODE (LlmGhostOllamaBackend, llm_ghost_ollama_backend, G_TYPE
 
 /* ---- request body builder ----------------------------------------------- */
 
-static char *
-build_request_body (const char              *model,
-                    const LlmGhostFimTokens *tokens,
-                    const char              *prefix,
-                    const char              *suffix,
-                    guint                    num_predict,
-                    double                   temperature)
+char *
+_llm_ghost_ollama_build_request_body (const char              *model,
+                                      const LlmGhostFimTokens *tokens,
+                                      const char              *prefix,
+                                      const char              *suffix,
+                                      guint                    num_predict,
+                                      double                   temperature)
 {
   /* Bypass Ollama's prompt-template layer with raw=true and inject the
    * configured family's FIM sentinels directly. Works on models whose
@@ -205,7 +206,7 @@ ollama_request (LlmGhostBackend     *backend,
       return;
     }
 
-  char *body = build_request_body (self->model, self->fim_tokens,
+  char *body = _llm_ghost_ollama_build_request_body (self->model, self->fim_tokens,
                                    prefix, suffix,
                                    self->num_predict, self->temperature);
   GBytes *bytes = g_bytes_new_take (body, strlen (body));

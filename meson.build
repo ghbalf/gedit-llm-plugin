@@ -20,6 +20,12 @@ json_dep    = dependency('json-glib-1.0', version: '>= 1.6')
 gedit_dep   = dependency('gedit',        version: '>= 46')
 peas_dep    = dependency('libpeas-1.0',  version: '>= 1.20')
 
+# Headless GTK tests run under a virtual framebuffer. We wrap only the gui
+# test in xvfb-run (see tests/meson.build) rather than making it a default
+# test setup, so the display-free unit suite stays dependency-light and pays
+# no xvfb overhead. The gui test is only registered when xvfb-run is present.
+xvfb_run = find_program('xvfb-run', required: false)
+
 llmghost_inc = include_directories('lib')
 
 subdir('lib')
