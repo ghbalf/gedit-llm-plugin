@@ -20,3 +20,11 @@ test_ollama_body = executable(
   install: false,
 )
 test('ollama-body', test_ollama_body, suite: 'unit')
+
+test_fake_backend = executable(
+  'test-fake-backend',
+  'test-fake-backend.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('fake-backend', test_fake_backend, suite: 'unit')
