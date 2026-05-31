@@ -239,6 +239,28 @@ meson compile -C build         # build
 ./build/tests/llmghost-demo    # run demo
 ```
 
+## Tests
+
+`g_test` suite under `tests/`, wired into `meson test`:
+
+- `--suite unit` — display-free: FIM tokens, the Ollama request-body builder
+  (via `lib/llmghost-ollama-backend-internal.h`), the fake-backend async
+  contract, and the instrumented mock backend.
+- `--suite gui` — headless `LlmGhostController` tests under Xvfb (behaviour +
+  a sanity-coordinate guard for the Phase-3 buffer-vs-window bug). Registered
+  only when `xvfb-run` is found; it is the default test setup, so plain
+  `meson test` runs everything.
+
+```
+meson test -C build              # all suites (gui wrapped in xvfb-run -a)
+meson test -C build --suite unit # display-free subset
+meson test -C build controller -v
+```
+
+The mock backend (`tests/mock-backend.{h,c}`) is deferred-by-default so tests
+drive completion timing; the production `LlmGhostFakeBackend` can't, since it
+completes synchronously and ignores its `GCancellable`.
+
 Env-var overrides for ad-hoc model swaps:
 
 ```
