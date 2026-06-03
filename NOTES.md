@@ -24,6 +24,13 @@ spark-2448 with `qwen3-coder-next:latest`. Switch model + token-set via
 `LLMGHOST_OLLAMA_MODEL` + `LLMGHOST_OLLAMA_TOKENS` env vars (rebuild not
 needed; `killall gedit && gedit` to reload the plugin).
 
+**Partial acceptance landed 2026-06-03** (PR #1, merged to `master`):
+Right=accept-next-char and Ctrl+Right=accept-next-word now sit alongside
+Tab/Esc — the unaccepted remainder stays ghosted. Word = leading
+whitespace + word-char run (alnum/`_`), else one punctuation char. Built
+spec-first; design + plan under `docs/superpowers/`. Covered by the
+`ghost-accept` unit suite and the new `controller` gui subtests.
+
 **Next focus:** Supermaven backend (Phase 5) + cloud LLM provider
 backends (Phase 6). See those sections below.
 
