@@ -31,8 +31,10 @@ whitespace + word-char run (alnum/`_`), else one punctuation char. Built
 spec-first; design + plan under `docs/superpowers/`. Covered by the
 `ghost-accept` unit suite and the new `controller` gui subtests.
 
-**Next focus:** Supermaven backend (Phase 5) + cloud LLM provider
-backends (Phase 6). See those sections below.
+**Next focus:** cloud LLM provider backends (Phase 6) — starting with an
+OpenAI-compat backend, then Codestral native FIM. (Phase 5 / Supermaven
+dropped 2026-06-03 — the product is effectively defunct; see that
+section.)
 
 ## Toolkit
 
@@ -141,7 +143,29 @@ needs:
 Revisit once Phase 5 / 6 backends are landed and we have real signal
 about which suggestions feel "wanted to span multiple lines".
 
-## Phase 5 — Supermaven backend
+## Phase 5 — Supermaven backend (DROPPED 2026-06-03)
+
+**Dropped — Supermaven is effectively defunct as a standalone product.**
+Anysphere (Cursor) acquired Supermaven in Nov 2024 and folded its
+inference pipeline into Cursor's built-in Tab completion. The standalone
+VS Code extension has been frozen at **v1.1.12 since ~Sept 2024** (no
+updates post-acquisition), and secondary sources report the standalone
+extensions were discontinued ~Nov 30 2025 (couldn't confirm the exact
+date against a primary source; the marketing site still shows pricing
+with no shutdown banner, but the frozen extension is the decisive tell).
+
+Building this backend would mean reverse-engineering the proprietary
+stdin/stdout protocol of an **abandoned binary** — no upstream to track,
+no stability guarantee, and the binary may stop being distributable. The
+sub-200 ms + huge-context edge is now a Cursor-only feature we can't call
+from a gedit plugin anyway. This matches the exit criterion the original
+notes already set ("undocumented/obfuscated protocol → just keep using
+Ollama / cloud; Supermaven is nice-to-have, not core"). **Go straight to
+Phase 6** — Codestral native FIM is the strongest free-tier path.
+
+Original design notes kept below for the record only.
+
+---
 
 Supermaven is a closed-source local-first completion service known
 for sub-200 ms latency. Architecture differs from Ollama in important
