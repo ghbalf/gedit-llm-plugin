@@ -39,6 +39,14 @@ test_mock_backend = executable(
 )
 test('mock-backend', test_mock_backend, suite: 'unit')
 
+test_ghost_accept = executable(
+  'test-ghost-accept',
+  'test-ghost-accept.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('ghost-accept', test_ghost_accept, suite: 'unit')
+
 if xvfb_run.found()
   test_controller = executable(
     'test-controller',

@@ -1,7 +1,9 @@
 #include "llmghost-controller.h"
 #include "llmghost-overlay.h"
+#include "llmghost-controller-internal.h"
 
 #include <gdk/gdkkeysyms.h>
+#include <string.h>
 
 #define DEFAULT_DEBOUNCE_MS 80
 #define MAX_CONTEXT_BYTES   (8 * 1024)
@@ -52,6 +54,7 @@ static void     show_ghost_at_cursor      (LlmGhostController *self);
 static void     reposition_ghost          (LlmGhostController *self);
 static void     hide_ghost                (LlmGhostController *self);
 static void     accept_ghost              (LlmGhostController *self);
+static void     accept_ghost_prefix       (LlmGhostController *self, gsize n_bytes);
 static void     cancel_in_flight          (LlmGhostController *self);
 static void     clear_debounce            (LlmGhostController *self);
 static void     detach_from_view          (LlmGhostController *self);
@@ -535,28 +538,90 @@ hide_ghost (LlmGhostController *self)
     }
 }
 
+/* ---- ghost-acceptance boundary helpers (exposed for tests) -------------- */
+
+gsize
+_llm_ghost_controller_next_char_len (const char *ghost)
+{
+  if (ghost == NULL || *ghost == '\0')
+    return 0;
+  return (gsize) (g_utf8_next_char (ghost) - ghost);
+}
+
+gsize
+_llm_ghost_controller_next_word_len (const char *ghost)
+{
+  if (ghost == NULL || *ghost == '\0')
+    return 0;
+
+  const char *p = ghost;
+  while (*p != '\0' && g_unichar_isspace (g_utf8_get_char (p)))   /* leading whitespace */
+    p = g_utf8_next_char (p);
+
+  if (*p != '\0')
+    {
+      gunichar c = g_utf8_get_char (p);
+      if (g_unichar_isalnum (c) || c == '_')                      /* run of word chars */
+        {
+          while (*p != '\0')
+            {
+              gunichar w = g_utf8_get_char (p);
+              if (!g_unichar_isalnum (w) && w != '_')
+                break;
+              p = g_utf8_next_char (p);
+            }
+        }
+      else                                                        /* single punctuation char */
+        {
+          p = g_utf8_next_char (p);
+        }
+    }
+
+  return (gsize) (p - ghost);
+}
+
 /* ---- key handling -------------------------------------------------------- */
+
+/* Accept the first n_bytes of the current ghost: insert that slice, keep the
+ * remainder visible (re-rendered at the advanced cursor), or hide if nothing
+ * is left. The inserting_acceptance guard stops the buffer insert from
+ * triggering restart_request (which would cancel + hide + re-fetch). */
+static void
+accept_ghost_prefix (LlmGhostController *self, gsize n_bytes)
+{
+  if (self->view == NULL || self->current_ghost == NULL || n_bytes == 0)
+    return;
+
+  n_bytes = MIN (n_bytes, strlen (self->current_ghost));
+
+  char *accepted = g_strndup (self->current_ghost, n_bytes);
+  char *rest     = g_strdup (self->current_ghost + n_bytes);
+
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer (self->view);
+  self->inserting_acceptance = TRUE;
+  gtk_text_buffer_insert_at_cursor (buffer, accepted, -1);
+  self->inserting_acceptance = FALSE;
+  g_free (accepted);
+
+  g_clear_pointer (&self->current_ghost, g_free);
+
+  if (*rest != '\0')
+    {
+      self->current_ghost = rest;          /* take ownership */
+      show_ghost_at_cursor (self);
+    }
+  else
+    {
+      g_free (rest);
+      hide_ghost (self);
+    }
+}
 
 static void
 accept_ghost (LlmGhostController *self)
 {
-  if (self->view == NULL || self->current_ghost == NULL)
-    return;
-
-  char *text = g_steal_pointer (&self->current_ghost);
-
-  GtkTextBuffer *buffer = gtk_text_view_get_buffer (self->view);
-  self->inserting_acceptance = TRUE;
-  gtk_text_buffer_insert_at_cursor (buffer, text, -1);
-  self->inserting_acceptance = FALSE;
-
-  g_free (text);
-
-  if (self->overlay_visible)
-    {
-      gtk_widget_hide (GTK_WIDGET (self->overlay));
-      self->overlay_visible = FALSE;
-    }
+  if (self->current_ghost != NULL)
+    accept_ghost_prefix (self, strlen (self->current_ghost));
 }
 
 static gboolean
@@ -568,12 +633,28 @@ on_view_key_press (GtkWidget *widget, GdkEventKey *event, gpointer user_data)
   if (!self->overlay_visible)
     return GDK_EVENT_PROPAGATE;
 
+  guint mods = event->state & gtk_accelerator_get_default_mod_mask ();
+
   switch (event->keyval)
     {
     case GDK_KEY_Tab:
     case GDK_KEY_KP_Tab:
       accept_ghost (self);
       return GDK_EVENT_STOP;
+
+    case GDK_KEY_Right:
+    case GDK_KEY_KP_Right:
+      if (mods == 0)
+        {
+          accept_ghost_prefix (self, _llm_ghost_controller_next_char_len (self->current_ghost));
+          return GDK_EVENT_STOP;
+        }
+      if (mods == GDK_CONTROL_MASK)
+        {
+          accept_ghost_prefix (self, _llm_ghost_controller_next_word_len (self->current_ghost));
+          return GDK_EVENT_STOP;
+        }
+      return GDK_EVENT_PROPAGATE;
 
     case GDK_KEY_Escape:
       cancel_in_flight (self);

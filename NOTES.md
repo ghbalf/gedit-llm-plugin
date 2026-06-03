@@ -42,6 +42,8 @@ and plugin both target GTK 3.
   isn't reachable
 - `LlmGhostOverlay` — `GtkLabel` subclass, greyed italic markup
 - `LlmGhostController` — debounce, in-flight cancellation, Tab/Esc,
+  Right=accept-next-char, Ctrl+Right=accept-next-word (word = leading
+  whitespace + word-char run, else one punctuation char),
   cursor-position-aware repositioning, scroll repositioning,
   cursor-safe-for-ghost suppression, trailing-whitespace strip
 - `tests/demo.c` — minimal GTK3 host

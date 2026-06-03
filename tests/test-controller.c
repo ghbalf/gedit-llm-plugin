@@ -94,16 +94,23 @@ ghost_visible (Fixture *f)
 }
 
 static gboolean
-send_key (Fixture *f, guint keyval)
+send_key_mod (Fixture *f, guint keyval, guint state)
 {
   GdkEvent *ev = gdk_event_new (GDK_KEY_PRESS);
   ev->key.keyval = keyval;
+  ev->key.state  = state;
   GdkWindow *win = gtk_widget_get_window (GTK_WIDGET (f->view));
   ev->key.window = win != NULL ? g_object_ref (win) : NULL;
   gboolean handled = FALSE;
   g_signal_emit_by_name (f->view, "key-press-event", ev, &handled);
   gdk_event_free (ev);
   return handled;
+}
+
+static gboolean
+send_key (Fixture *f, guint keyval)
+{
+  return send_key_mod (f, keyval, 0);
 }
 
 static void
@@ -181,6 +188,90 @@ test_escape_dismisses (void)
 }
 
 static void
+test_right_accepts_char (void)
+{
+  Fixture *f = fixture_new ();
+  gtk_text_buffer_insert_at_cursor (buf (f), "f", -1);
+  pump (SETTLE_MS);
+  mock_backend_complete_pending (MOCK_BACKEND (f->backend));   /* response "abc" */
+  pump (SETTLE_MS);
+  g_assert_true (ghost_visible (f));
+
+  g_assert_true (send_key (f, GDK_KEY_Right));
+  char *t1 = buffer_text (f);
+  g_assert_cmpstr (t1, ==, "fa");
+  g_free (t1);
+  g_assert_true (ghost_visible (f));   /* "bc" remains */
+
+  g_assert_true (send_key (f, GDK_KEY_Right));
+  char *t2 = buffer_text (f);
+  g_assert_cmpstr (t2, ==, "fab");
+  g_free (t2);
+  g_assert_true (ghost_visible (f));
+
+  g_assert_true (send_key (f, GDK_KEY_Right));
+  char *t3 = buffer_text (f);
+  g_assert_cmpstr (t3, ==, "fabc");
+  g_free (t3);
+  g_assert_false (ghost_visible (f));  /* nothing left */
+  fixture_free (f);
+}
+
+static void
+test_ctrl_right_accepts_word (void)
+{
+  Fixture *f = fixture_new ();
+  mock_backend_set_response (MOCK_BACKEND (f->backend), "foo bar");
+  gtk_text_buffer_insert_at_cursor (buf (f), "x", -1);
+  pump (SETTLE_MS);
+  mock_backend_complete_pending (MOCK_BACKEND (f->backend));
+  pump (SETTLE_MS);
+  g_assert_true (ghost_visible (f));
+
+  g_assert_true (send_key_mod (f, GDK_KEY_Right, GDK_CONTROL_MASK));
+  char *t1 = buffer_text (f);
+  g_assert_cmpstr (t1, ==, "xfoo");
+  g_free (t1);
+  g_assert_true (ghost_visible (f));   /* " bar" remains */
+
+  g_assert_true (send_key_mod (f, GDK_KEY_Right, GDK_CONTROL_MASK));
+  char *t2 = buffer_text (f);
+  g_assert_cmpstr (t2, ==, "xfoo bar");
+  g_free (t2);
+  g_assert_false (ghost_visible (f));
+  fixture_free (f);
+}
+
+static void
+test_ctrl_right_punctuation (void)
+{
+  Fixture *f = fixture_new ();
+  mock_backend_set_response (MOCK_BACKEND (f->backend), "ab(c");
+  gtk_text_buffer_insert_at_cursor (buf (f), "x", -1);
+  pump (SETTLE_MS);
+  mock_backend_complete_pending (MOCK_BACKEND (f->backend));
+  pump (SETTLE_MS);
+  g_assert_true (ghost_visible (f));
+
+  g_assert_true (send_key_mod (f, GDK_KEY_Right, GDK_CONTROL_MASK));
+  char *t1 = buffer_text (f);
+  g_assert_cmpstr (t1, ==, "xab");      /* word run "ab" */
+  g_free (t1);
+
+  g_assert_true (send_key_mod (f, GDK_KEY_Right, GDK_CONTROL_MASK));
+  char *t2 = buffer_text (f);
+  g_assert_cmpstr (t2, ==, "xab(");     /* single punctuation "(" */
+  g_free (t2);
+
+  g_assert_true (send_key_mod (f, GDK_KEY_Right, GDK_CONTROL_MASK));
+  char *t3 = buffer_text (f);
+  g_assert_cmpstr (t3, ==, "xab(c");    /* word run "c" */
+  g_free (t3);
+  g_assert_false (ghost_visible (f));
+  fixture_free (f);
+}
+
+static void
 test_midline_suppression (void)
 {
   Fixture *f = fixture_new ();
@@ -252,6 +343,9 @@ main (int argc, char *argv[])
   g_test_add_func ("/controller/cancel-on-new-input",  test_cancel_on_new_input);
   g_test_add_func ("/controller/tab-accepts",          test_tab_accepts);
   g_test_add_func ("/controller/escape-dismisses",     test_escape_dismisses);
+  g_test_add_func ("/controller/right-accepts-char",      test_right_accepts_char);
+  g_test_add_func ("/controller/ctrl-right-accepts-word", test_ctrl_right_accepts_word);
+  g_test_add_func ("/controller/ctrl-right-punctuation",  test_ctrl_right_punctuation);
   g_test_add_func ("/controller/midline-suppression",  test_midline_suppression);
   g_test_add_func ("/controller/sanity-coords",        test_sanity_coords_after_scroll);
   return g_test_run ();
