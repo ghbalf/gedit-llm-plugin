@@ -1,5 +1,6 @@
 llmghost_sources = files(
   'llmghost-backend.c',
+  'llmghost-backend-factory.c',
   'llmghost-controller.c',
   'llmghost-fake-backend.c',
   'llmghost-fim-tokens.c',
@@ -14,6 +15,7 @@ llmghost_sources = files(
 llmghost_headers = files(
   'llmghost.h',
   'llmghost-backend.h',
+  'llmghost-backend-factory.h',
   'llmghost-controller.h',
   'llmghost-fake-backend.h',
   'llmghost-fim-tokens.h',

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llmghost-backend.h"
+#include "llmghost-backend-factory.h"
 #include "llmghost-controller.h"
 #include "llmghost-fake-backend.h"
 #include "llmghost-fim-tokens.h"

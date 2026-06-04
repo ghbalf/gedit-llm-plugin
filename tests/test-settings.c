@@ -4,6 +4,10 @@
 #include <json-glib/json-glib.h>
 #include "llmghost-settings.h"
 #include "llmghost-settings-internal.h"
+#include "llmghost-backend-factory.h"
+#include "llmghost-ollama-backend.h"
+#include "llmghost-openai-backend.h"
+#include "llmghost-mistral-backend.h"
 
 static void
 test_interpolate_null (void)
@@ -260,6 +264,65 @@ test_reload_broken_keeps_last_good (void)
   g_free (path);
 }
 
+static void
+test_factory_ollama (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"ollama\","
+    "\"backends\":{\"ollama\":{\"host\":\"h\",\"port\":1,\"model\":\"m\",\"tokens\":\"Qwen\"}}}");
+  LlmGhostBackend *b = llm_ghost_backend_new_from_settings (s);
+  g_assert_true (LLM_GHOST_IS_OLLAMA_BACKEND (b));
+  g_object_unref (b);
+  g_object_unref (s);
+}
+
+static void
+test_factory_openai (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"openai\","
+    "\"backends\":{\"openai\":{\"base_url\":\"http://x/v1\",\"model\":\"m\",\"mode\":\"chat\"}}}");
+  LlmGhostBackend *b = llm_ghost_backend_new_from_settings (s);
+  g_assert_true (LLM_GHOST_IS_OPENAI_BACKEND (b));
+  g_object_unref (b);
+  g_object_unref (s);
+}
+
+static void
+test_factory_mistral (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"mistral\","
+    "\"backends\":{\"mistral\":{\"base_url\":\"http://x/v1\",\"model\":\"m\"}}}");
+  LlmGhostBackend *b = llm_ghost_backend_new_from_settings (s);
+  g_assert_true (LLM_GHOST_IS_MISTRAL_BACKEND (b));
+  g_object_unref (b);
+  g_object_unref (s);
+}
+
+static void
+test_factory_unknown_falls_back_to_ollama (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{\"backend\":\"frobnicate\"}");
+  g_test_expect_message ("llmghost-factory", G_LOG_LEVEL_WARNING, "*unknown backend*");
+  LlmGhostBackend *b = llm_ghost_backend_new_from_settings (s);
+  g_test_assert_expected_messages ();
+  g_assert_true (LLM_GHOST_IS_OLLAMA_BACKEND (b));
+  g_object_unref (b);
+  g_object_unref (s);
+}
+
+static void
+test_factory_missing_params_ok (void)
+{
+  /* No "backends" object at all → factory still builds ollama defaults. */
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{\"backend\":\"ollama\"}");
+  LlmGhostBackend *b = llm_ghost_backend_new_from_settings (s);
+  g_assert_true (LLM_GHOST_IS_OLLAMA_BACKEND (b));
+  g_object_unref (b);
+  g_object_unref (s);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -281,5 +344,10 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/file/autowrite-default",   test_autowrite_default);
   g_test_add_func ("/settings/file/reload-updates",      test_reload_updates_and_signals);
   g_test_add_func ("/settings/file/reload-broken",       test_reload_broken_keeps_last_good);
+  g_test_add_func ("/settings/factory/ollama",         test_factory_ollama);
+  g_test_add_func ("/settings/factory/openai",         test_factory_openai);
+  g_test_add_func ("/settings/factory/mistral",        test_factory_mistral);
+  g_test_add_func ("/settings/factory/unknown",        test_factory_unknown_falls_back_to_ollama);
+  g_test_add_func ("/settings/factory/missing-params", test_factory_missing_params_ok);
   return g_test_run ();
 }
