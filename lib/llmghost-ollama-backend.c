@@ -4,6 +4,7 @@
 #include <libsoup/soup.h>
 #include <json-glib/json-glib.h>
 #include <string.h>
+#include "llmghost-http-util.h"
 
 #define DEFAULT_HOST         "spark-2448"
 #define DEFAULT_PORT         11434
@@ -101,14 +102,12 @@ _llm_ghost_ollama_build_request_body (const char              *model,
 /* ---- async response handler --------------------------------------------- */
 
 static void
-on_libsoup_response (GObject *source, GAsyncResult *result, gpointer user_data)
+on_ollama_response (GObject *source, GAsyncResult *result, gpointer user_data)
 {
-  GTask        *task    = G_TASK (user_data);
-  SoupSession  *session = SOUP_SESSION (source);
-  SoupMessage  *msg     = SOUP_MESSAGE (g_task_get_task_data (task));
-  GError       *error   = NULL;
-
-  GBytes *body = soup_session_send_and_read_finish (session, result, &error);
+  (void) source;
+  GTask    *task  = G_TASK (user_data);
+  GError   *error = NULL;
+  JsonNode *root  = _llm_ghost_http_post_json_finish (result, &error);
 
   if (error != NULL)
     {
@@ -117,53 +116,22 @@ on_libsoup_response (GObject *source, GAsyncResult *result, gpointer user_data)
       return;
     }
 
-  SoupStatus status = soup_message_get_status (msg);
-  if (status != SOUP_STATUS_OK)
-    {
-      gsize n = 0;
-      const char *snippet = body ? g_bytes_get_data (body, &n) : NULL;
-      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
-                               "ollama HTTP %u: %.*s", (unsigned) status,
-                               (int) MIN (n, 256u),
-                               snippet ? snippet : "");
-      g_clear_pointer (&body, g_bytes_unref);
-      g_object_unref (task);
-      return;
-    }
-
-  gsize len = 0;
-  const char *data = g_bytes_get_data (body, &len);
-
-  JsonParser *parser = json_parser_new ();
-  if (!json_parser_load_from_data (parser, data, (gssize) len, &error))
-    {
-      g_task_return_error (task, error);
-      g_object_unref (parser);
-      g_bytes_unref (body);
-      g_object_unref (task);
-      return;
-    }
-
-  JsonNode *root = json_parser_get_root (parser);
-  if (root == NULL || !JSON_NODE_HOLDS_OBJECT (root))
+  JsonObject *obj = JSON_NODE_HOLDS_OBJECT (root) ? json_node_get_object (root) : NULL;
+  if (obj == NULL)
     {
       g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
                                "ollama: malformed JSON response");
-      g_object_unref (parser);
-      g_bytes_unref (body);
+      json_node_unref (root);
       g_object_unref (task);
       return;
     }
-
-  JsonObject *obj = json_node_get_object (root);
 
   if (json_object_has_member (obj, "error"))
     {
       const char *err = json_object_get_string_member (obj, "error");
       g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
                                "ollama: %s", err ? err : "(no message)");
-      g_object_unref (parser);
-      g_bytes_unref (body);
+      json_node_unref (root);
       g_object_unref (task);
       return;
     }
@@ -172,9 +140,7 @@ on_libsoup_response (GObject *source, GAsyncResult *result, gpointer user_data)
                              ? json_object_get_string_member (obj, "response")
                              : "";
   char *out = g_strdup (response ? response : "");
-
-  g_object_unref (parser);
-  g_bytes_unref (body);
+  json_node_unref (root);
 
   g_task_return_pointer (task, out, g_free);
   g_object_unref (task);
@@ -195,33 +161,13 @@ ollama_request (LlmGhostBackend     *backend,
 
   char *url = g_strdup_printf ("http://%s:%u/api/generate",
                                self->host, (unsigned) self->port);
-  SoupMessage *msg = soup_message_new (SOUP_METHOD_POST, url);
-  g_free (url);
-
-  if (msg == NULL)
-    {
-      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                               "invalid Ollama URL");
-      g_object_unref (task);
-      return;
-    }
-
   char *body = _llm_ghost_ollama_build_request_body (self->model, self->fim_tokens,
-                                   prefix, suffix,
-                                   self->num_predict, self->temperature);
-  GBytes *bytes = g_bytes_new_take (body, strlen (body));
-  soup_message_set_request_body_from_bytes (msg, "application/json", bytes);
-  g_bytes_unref (bytes);
+                                                     prefix, suffix,
+                                                     self->num_predict, self->temperature);
 
-  /* Keep the SoupMessage alive until the response handler reads its status. */
-  g_task_set_task_data (task, msg, g_object_unref);
-
-  soup_session_send_and_read_async (self->session,
-                                    msg,
-                                    G_PRIORITY_DEFAULT,
-                                    cancellable,
-                                    on_libsoup_response,
-                                    task);
+  _llm_ghost_http_post_json_async (self->session, url, NULL, body,
+                                   cancellable, on_ollama_response, task);
+  g_free (url);
 }
 
 static char *
