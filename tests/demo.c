@@ -9,6 +9,8 @@
  *   LLMGHOST_OLLAMA_PORT    (default 11434)
  *   LLMGHOST_OLLAMA_MODEL   (default qwen3-coder-next:latest)
  *   LLMGHOST_OLLAMA_TOKENS  (default Qwen; one of: Qwen, StarCoder, DeepSeek)
+ *   LLMGHOST_BACKEND        (default ollama; set "openai" for the OpenAI backend)
+ *   LLMGHOST_OPENAI_BASE_URL / _MODEL / _API_KEY / _MODE  (OpenAI backend config)
  */
 
 #include <gtk/gtk.h>
@@ -32,29 +34,42 @@ activate (GtkApplication *app, gpointer user_data)
   gtk_container_add (GTK_CONTAINER (scroll), view);
   gtk_container_add (GTK_CONTAINER (window), scroll);
 
-  const char *host_env   = g_getenv ("LLMGHOST_OLLAMA_HOST");
-  const char *port_env   = g_getenv ("LLMGHOST_OLLAMA_PORT");
-  const char *model_env  = g_getenv ("LLMGHOST_OLLAMA_MODEL");
-  const char *tokens_env = g_getenv ("LLMGHOST_OLLAMA_TOKENS");
+  const char *which = g_getenv ("LLMGHOST_BACKEND");   /* "openai" | "ollama" (default) */
+  LlmGhostBackend *backend;
 
-  guint16 port = 0;
-  if (port_env != NULL && *port_env != '\0')
+  if (which != NULL && g_ascii_strcasecmp (which, "openai") == 0)
     {
-      gint64 v = g_ascii_strtoll (port_env, NULL, 10);
-      if (v > 0 && v < 65536)
-        port = (guint16) v;
+      /* base/model/key/mode all read from LLMGHOST_OPENAI_* by the ctor. */
+      backend = llm_ghost_openai_backend_new (NULL, NULL, NULL,
+                                              LLM_GHOST_OPENAI_MODE_CHAT);
+      gtk_window_set_title (GTK_WINDOW (window), "llmghost demo (OpenAI)");
     }
-
-  LlmGhostBackend *backend = llm_ghost_ollama_backend_new (host_env, port, model_env);
-
-  if (tokens_env != NULL && *tokens_env != '\0')
+  else
     {
-      const LlmGhostFimTokens *toks = llm_ghost_fim_tokens_lookup_builtin (tokens_env);
-      if (toks != NULL)
-        llm_ghost_ollama_backend_set_fim_tokens (LLM_GHOST_OLLAMA_BACKEND (backend), toks);
-      else
-        g_printerr ("llmghost-demo: unknown FIM token set %s; using default (Qwen)\n",
-                    tokens_env);
+      const char *host_env   = g_getenv ("LLMGHOST_OLLAMA_HOST");
+      const char *port_env   = g_getenv ("LLMGHOST_OLLAMA_PORT");
+      const char *model_env  = g_getenv ("LLMGHOST_OLLAMA_MODEL");
+      const char *tokens_env = g_getenv ("LLMGHOST_OLLAMA_TOKENS");
+
+      guint16 port = 0;
+      if (port_env != NULL && *port_env != '\0')
+        {
+          gint64 v = g_ascii_strtoll (port_env, NULL, 10);
+          if (v > 0 && v < 65536)
+            port = (guint16) v;
+        }
+
+      backend = llm_ghost_ollama_backend_new (host_env, port, model_env);
+
+      if (tokens_env != NULL && *tokens_env != '\0')
+        {
+          const LlmGhostFimTokens *toks = llm_ghost_fim_tokens_lookup_builtin (tokens_env);
+          if (toks != NULL)
+            llm_ghost_ollama_backend_set_fim_tokens (LLM_GHOST_OLLAMA_BACKEND (backend), toks);
+          else
+            g_printerr ("llmghost-demo: unknown FIM token set %s; using default (Qwen)\n",
+                        tokens_env);
+        }
     }
 
   LlmGhostController *ctrl = llm_ghost_controller_new (GTK_TEXT_VIEW (view), backend);
