@@ -195,6 +195,15 @@ nice-to-have, not core.
 
 ## Phase 6 — cloud LLM provider backends
 
+**OpenAI-compatible backend landed 2026-06-04.** `LlmGhostOpenAIBackend`
+supports `/v1/completions` (native FIM via `suffix`) and
+`/v1/chat/completions` (prompt-FIM), config via constructor +
+`LLMGHOST_OPENAI_{BASE_URL,MODEL,API_KEY,MODE}`, optional Bearer auth.
+Built on the new shared `llmghost-http-util` (extracted from the Ollama
+backend). Reachable in the demo via `LLMGHOST_BACKEND=openai`. Covered by
+the `openai-body` and `http-util` unit suites. Still deferred: GSettings
+UI, libsecret key storage, SSE streaming, Mistral/Claude backends.
+
 Three families, distinguished by FIM support:
 
 ### Native FIM
