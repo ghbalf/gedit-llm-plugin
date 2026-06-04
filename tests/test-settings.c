@@ -1,4 +1,6 @@
 #include <glib.h>
+#include <glib/gstdio.h>
+#include <gio/gio.h>
 #include <json-glib/json-glib.h>
 #include "llmghost-settings.h"
 #include "llmghost-settings-internal.h"
@@ -157,6 +159,107 @@ test_parse_malformed_uses_defaults (void)
   g_object_unref (s);
 }
 
+/* Returns a newly-allocated path to a fresh temp settings file seeded with
+ * @contents. Caller frees the path; the file lives in a temp dir that the test
+ * intentionally leaves behind (cheap, and avoids teardown races). */
+static char *
+write_temp_settings (const char *contents)
+{
+  GError *error = NULL;
+  char *dir = g_dir_make_tmp ("llmghost-settings-XXXXXX", &error);
+  g_assert_no_error (error);
+  char *path = g_build_filename (dir, "settings.json", NULL);
+  g_assert_true (g_file_set_contents (path, contents, -1, &error));
+  g_assert_no_error (error);
+  g_free (dir);
+  return path;
+}
+
+static void
+test_autowrite_default (void)
+{
+  /* A non-existent file → the default template is written, then loaded. Loading
+   * the default interpolates its 3 unset template vars, emitting 3 warnings. */
+  g_unsetenv ("VARS");
+  g_unsetenv ("OPENAI_API_KEY");
+  g_unsetenv ("MISTRAL_API_KEY");
+
+  GError *error = NULL;
+  char *dir = g_dir_make_tmp ("llmghost-settings-XXXXXX", &error);
+  g_assert_no_error (error);
+  char *path = g_build_filename (dir, "settings.json", NULL);
+  g_assert_false (g_file_test (path, G_FILE_TEST_EXISTS));
+
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "*not set*");
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "*not set*");
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "*not set*");
+  LlmGhostSettings *s = llm_ghost_settings_new (path);
+  g_test_assert_expected_messages ();
+
+  g_assert_true (g_file_test (path, G_FILE_TEST_EXISTS));            /* written */
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "ollama");
+
+  g_object_unref (s);
+  g_free (path);
+  g_free (dir);
+}
+
+static void
+on_changed_count (LlmGhostSettings *s, gpointer data)
+{
+  (void) s;
+  (*(int *) data)++;
+}
+
+static void
+test_reload_updates_and_signals (void)
+{
+  /* Clean JSON (no unset vars) → no warnings on this path. */
+  char *path = write_temp_settings ("{\"backend\":\"mistral\"}");
+  LlmGhostSettings *s = llm_ghost_settings_new (path);
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "mistral");
+
+  int changed = 0;
+  g_signal_connect (s, "changed", G_CALLBACK (on_changed_count), &changed);
+
+  GError *error = NULL;
+  g_assert_true (g_file_set_contents (path, "{\"backend\":\"openai\"}", -1, &error));
+  g_assert_no_error (error);
+
+  _llm_ghost_settings_reload (s);
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "openai");
+  g_assert_cmpint (changed, ==, 1);
+
+  g_object_unref (s);
+  g_free (path);
+}
+
+static void
+test_reload_broken_keeps_last_good (void)
+{
+  char *path = write_temp_settings ("{\"backend\":\"openai\"}");
+  LlmGhostSettings *s = llm_ghost_settings_new (path);
+
+  int changed = 0;
+  g_signal_connect (s, "changed", G_CALLBACK (on_changed_count), &changed);
+
+  GError *error = NULL;
+  g_assert_true (g_file_set_contents (path, "broken {", -1, &error));
+  g_assert_no_error (error);
+
+  /* Broken JSON on reload emits a parse-error warning then a keep-last warning. */
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "parse error:*");
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "*keeping last config*");
+  _llm_ghost_settings_reload (s);
+  g_test_assert_expected_messages ();
+
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "openai"); /* unchanged */
+  g_assert_cmpint (changed, ==, 0);                                /* no signal */
+
+  g_object_unref (s);
+  g_free (path);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -175,5 +278,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/parse/params-interpolated",    test_parse_backend_params_interpolated);
   g_test_add_func ("/settings/parse/underscore-ignored",     test_parse_underscore_key_ignored);
   g_test_add_func ("/settings/parse/malformed-defaults",     test_parse_malformed_uses_defaults);
+  g_test_add_func ("/settings/file/autowrite-default",   test_autowrite_default);
+  g_test_add_func ("/settings/file/reload-updates",      test_reload_updates_and_signals);
+  g_test_add_func ("/settings/file/reload-broken",       test_reload_broken_keeps_last_good);
   return g_test_run ();
 }

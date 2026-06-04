@@ -212,6 +212,103 @@ llm_ghost_settings_get_backend_params (LlmGhostSettings *self, const char *name)
   return json_node_get_object (pn);
 }
 
+/* ---- file loading + live reload ---------------------------------------- */
+
+static void
+ensure_file_exists (const char *path)
+{
+  if (g_file_test (path, G_FILE_TEST_EXISTS))
+    return;
+  char *dir = g_path_get_dirname (path);
+  g_mkdir_with_parents (dir, 0700);
+  g_free (dir);
+
+  GError *error = NULL;
+  if (!g_file_set_contents (path, DEFAULT_SETTINGS_JSON, -1, &error))
+    {
+      g_warning ("could not write default %s: %s", path, error->message);
+      g_clear_error (&error);
+    }
+}
+
+/* Read self->path into the cache. On read or parse failure, fall back to
+ * built-in defaults WITHOUT overwriting the user's file. */
+static void
+load_from_file (LlmGhostSettings *self)
+{
+  char *data = NULL;
+  GError *error = NULL;
+  if (!g_file_get_contents (self->path, &data, NULL, &error))
+    {
+      g_warning ("could not read %s: %s; using defaults", self->path, error->message);
+      g_clear_error (&error);
+      set_root (self, default_object ());
+      return;
+    }
+  JsonObject *obj = parse_and_interpolate (data);
+  g_free (data);
+  set_root (self, obj != NULL ? obj : default_object ());
+}
+
+void
+_llm_ghost_settings_reload (LlmGhostSettings *self)
+{
+  if (self->path == NULL)
+    return;
+
+  char *data = NULL;
+  GError *error = NULL;
+  if (!g_file_get_contents (self->path, &data, NULL, &error))
+    {
+      g_warning ("reload could not read %s: %s; keeping last config",
+                 self->path, error->message);
+      g_clear_error (&error);
+      return;
+    }
+  JsonObject *obj = parse_and_interpolate (data);
+  g_free (data);
+  if (obj == NULL)
+    {
+      g_warning ("reload parse failed; keeping last config");
+      return;                                    /* keep last-good, no signal */
+    }
+  set_root (self, obj);
+  g_signal_emit (self, signals[SIG_CHANGED], 0);
+}
+
+static void
+on_file_changed (GFileMonitor *mon, GFile *file, GFile *other,
+                 GFileMonitorEvent ev, gpointer user_data)
+{
+  (void) mon; (void) file; (void) other;
+  if (ev == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT ||
+      ev == G_FILE_MONITOR_EVENT_CREATED)
+    _llm_ghost_settings_reload (LLM_GHOST_SETTINGS (user_data));
+}
+
+LlmGhostSettings *
+llm_ghost_settings_new (const char *path)
+{
+  LlmGhostSettings *self = g_object_new (LLM_GHOST_TYPE_SETTINGS, NULL);
+  self->path = path != NULL ? g_strdup (path) : llm_ghost_settings_default_path ();
+
+  ensure_file_exists (self->path);
+  load_from_file (self);
+
+  GFile *file = g_file_new_for_path (self->path);
+  GError *error = NULL;
+  self->monitor = g_file_monitor_file (file, G_FILE_MONITOR_NONE, NULL, &error);
+  if (self->monitor != NULL)
+    g_signal_connect (self->monitor, "changed", G_CALLBACK (on_file_changed), self);
+  else
+    {
+      g_warning ("could not watch %s: %s", self->path, error->message);
+      g_clear_error (&error);
+    }
+  g_object_unref (file);
+  return self;
+}
+
 /* ---- GObject lifecycle ------------------------------------------------- */
 
 static void
@@ -221,6 +318,7 @@ llm_ghost_settings_finalize (GObject *object)
   if (self->monitor != NULL)
     {
       g_signal_handlers_disconnect_by_data (self->monitor, self);
+      g_file_monitor_cancel (self->monitor);   /* release the kernel watch */
       g_clear_object (&self->monitor);
     }
   g_clear_pointer (&self->root, json_object_unref);
