@@ -5,4 +5,5 @@
 #include "llmghost-fake-backend.h"
 #include "llmghost-fim-tokens.h"
 #include "llmghost-ollama-backend.h"
+#include "llmghost-openai-backend.h"
 #include "llmghost-overlay.h"

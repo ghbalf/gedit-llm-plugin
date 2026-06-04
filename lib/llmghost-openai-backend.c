@@ -1,7 +1,9 @@
 #include "llmghost-openai-backend.h"
 #include "llmghost-openai-backend-internal.h"
 
+#include <libsoup/soup.h>
 #include <string.h>
+#include "llmghost-http-util.h"
 
 #define CHAT_SYSTEM_PROMPT \
   "You are a code completion engine. Output only the code that belongs " \
@@ -201,4 +203,193 @@ _llm_ghost_openai_extract_completion (JsonNode           *root,
         content = json_object_get_string_member (m, "content");
     }
   return _llm_ghost_openai_clean_chat_completion (content);
+}
+
+/* ---- type --------------------------------------------------------------- */
+
+#define DEFAULT_BASE_URL     "https://api.openai.com/v1"
+#define DEFAULT_MAX_TOKENS   64
+#define DEFAULT_TEMPERATURE  0.2
+#define REQUEST_TIMEOUT_SEC  30
+
+struct _LlmGhostOpenAIBackend
+{
+  GObject             parent_instance;
+
+  SoupSession        *session;
+  char               *base_url;
+  char               *model;
+  char               *api_key;     /* NULL = no auth */
+  LlmGhostOpenAIMode  mode;
+  guint               max_tokens;
+  double              temperature;
+};
+
+static void llm_ghost_openai_backend_iface_init (LlmGhostBackendInterface *iface);
+
+G_DEFINE_TYPE_WITH_CODE (LlmGhostOpenAIBackend, llm_ghost_openai_backend, G_TYPE_OBJECT,
+                         G_IMPLEMENT_INTERFACE (LLM_GHOST_TYPE_BACKEND,
+                                                llm_ghost_openai_backend_iface_init))
+
+/* ---- request flow ------------------------------------------------------- */
+
+static char *
+join_url (const char *base, const char *endpoint)
+{
+  gsize n = strlen (base);
+  if (n > 0 && base[n - 1] == '/')
+    return g_strconcat (base, endpoint, NULL);
+  return g_strconcat (base, "/", endpoint, NULL);
+}
+
+static void
+on_http_done (GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  (void) source;
+  GTask              *task  = G_TASK (user_data);
+  LlmGhostOpenAIMode  mode  = (LlmGhostOpenAIMode) GPOINTER_TO_INT (g_task_get_task_data (task));
+  GError             *error = NULL;
+
+  JsonNode *root = _llm_ghost_http_post_json_finish (result, &error);
+  if (error != NULL)
+    {
+      g_task_return_error (task, error);
+      g_object_unref (task);
+      return;
+    }
+
+  char *out = _llm_ghost_openai_extract_completion (root, mode, &error);
+  json_node_unref (root);
+
+  if (out == NULL)
+    {
+      g_task_return_error (task, error);
+      g_object_unref (task);
+      return;
+    }
+
+  g_task_return_pointer (task, out, g_free);
+  g_object_unref (task);
+}
+
+static void
+openai_request (LlmGhostBackend     *backend,
+                const char          *prefix,
+                const char          *suffix,
+                GCancellable        *cancellable,
+                GAsyncReadyCallback  callback,
+                gpointer             user_data)
+{
+  LlmGhostOpenAIBackend *self = LLM_GHOST_OPENAI_BACKEND (backend);
+  GTask *task = g_task_new (self, cancellable, callback, user_data);
+  g_task_set_task_data (task, GINT_TO_POINTER (self->mode), NULL);
+
+  gboolean comp = (self->mode == LLM_GHOST_OPENAI_MODE_COMPLETIONS);
+  char *url  = join_url (self->base_url, comp ? "completions" : "chat/completions");
+  char *body = comp
+    ? _llm_ghost_openai_build_completions_body (self->model, prefix, suffix,
+                                                self->max_tokens, self->temperature)
+    : _llm_ghost_openai_build_chat_body (self->model, prefix, suffix,
+                                         self->max_tokens, self->temperature);
+
+  _llm_ghost_http_post_json_async (self->session, url, self->api_key, body,
+                                   cancellable, on_http_done, task);
+  g_free (url);
+}
+
+static char *
+openai_request_finish (LlmGhostBackend *backend, GAsyncResult *result, GError **error)
+{
+  (void) backend;
+  return g_task_propagate_pointer (G_TASK (result), error);
+}
+
+static void
+llm_ghost_openai_backend_iface_init (LlmGhostBackendInterface *iface)
+{
+  iface->request        = openai_request;
+  iface->request_finish = openai_request_finish;
+}
+
+/* ---- GObject lifecycle -------------------------------------------------- */
+
+static void
+llm_ghost_openai_backend_finalize (GObject *object)
+{
+  LlmGhostOpenAIBackend *self = LLM_GHOST_OPENAI_BACKEND (object);
+  g_clear_object  (&self->session);
+  g_clear_pointer (&self->base_url, g_free);
+  g_clear_pointer (&self->model,    g_free);
+  g_clear_pointer (&self->api_key,  g_free);
+  G_OBJECT_CLASS (llm_ghost_openai_backend_parent_class)->finalize (object);
+}
+
+static void
+llm_ghost_openai_backend_class_init (LlmGhostOpenAIBackendClass *klass)
+{
+  G_OBJECT_CLASS (klass)->finalize = llm_ghost_openai_backend_finalize;
+}
+
+static void
+llm_ghost_openai_backend_init (LlmGhostOpenAIBackend *self)
+{
+  self->session     = soup_session_new ();
+  soup_session_set_timeout (self->session, REQUEST_TIMEOUT_SEC);
+  self->max_tokens  = DEFAULT_MAX_TOKENS;
+  self->temperature = DEFAULT_TEMPERATURE;
+  self->mode        = LLM_GHOST_OPENAI_MODE_CHAT;
+}
+
+/* ---- construction ------------------------------------------------------- */
+
+static char *
+pick (const char *arg, const char *env_name, const char *fallback)
+{
+  if (arg != NULL && *arg != '\0')
+    return g_strdup (arg);
+  const char *e = g_getenv (env_name);
+  if (e != NULL && *e != '\0')
+    return g_strdup (e);
+  return g_strdup (fallback);
+}
+
+static char *
+pick_nullable (const char *arg, const char *env_name)
+{
+  if (arg != NULL && *arg != '\0')
+    return g_strdup (arg);
+  const char *e = g_getenv (env_name);
+  if (e != NULL && *e != '\0')
+    return g_strdup (e);
+  return NULL;
+}
+
+static LlmGhostOpenAIMode
+resolve_mode (LlmGhostOpenAIMode fallback)
+{
+  const char *e = g_getenv ("LLMGHOST_OPENAI_MODE");
+  if (e == NULL || *e == '\0')
+    return fallback;
+  if (g_ascii_strcasecmp (e, "completions") == 0)
+    return LLM_GHOST_OPENAI_MODE_COMPLETIONS;
+  if (g_ascii_strcasecmp (e, "chat") == 0)
+    return LLM_GHOST_OPENAI_MODE_CHAT;
+  g_printerr ("llmghost: unknown LLMGHOST_OPENAI_MODE '%s'; using default\n", e);
+  return fallback;
+}
+
+LlmGhostBackend *
+llm_ghost_openai_backend_new (const char         *base_url,
+                              const char         *model,
+                              const char         *api_key,
+                              LlmGhostOpenAIMode  mode)
+{
+  LlmGhostOpenAIBackend *self = g_object_new (LLM_GHOST_TYPE_OPENAI_BACKEND, NULL);
+
+  self->base_url = pick (base_url, "LLMGHOST_OPENAI_BASE_URL", DEFAULT_BASE_URL);
+  self->model    = pick (model,    "LLMGHOST_OPENAI_MODEL",    "");
+  self->api_key  = pick_nullable (api_key, "LLMGHOST_OPENAI_API_KEY");
+  self->mode     = resolve_mode (mode);
+
+  return LLM_GHOST_BACKEND (self);
 }
