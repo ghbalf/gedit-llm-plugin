@@ -204,6 +204,14 @@ backend). Reachable in the demo via `LLMGHOST_BACKEND=openai`. Covered by
 the `openai-body` and `http-util` unit suites. Still deferred: GSettings
 UI, libsecret key storage, SSE streaming, Mistral/Claude backends.
 
+**Mistral Codestral backend landed 2026-06-04.** `LlmGhostMistralBackend`
+hits the Codestral FIM endpoint (`POST {base}/fim/completions`, native
+`prompt`+`suffix`), response = `choices[0].message.content` (with a `text`
+fallback). Config via constructor + `LLMGHOST_MISTRAL_{BASE_URL,MODEL,API_KEY}`,
+optional Bearer auth; default base `https://codestral.mistral.ai/v1`, model
+`codestral-latest`. Built on `llmghost-http-util`; reachable in the demo via
+`LLMGHOST_BACKEND=mistral`. Covered by the `mistral-body` unit suite.
+
 Three families, distinguished by FIM support:
 
 ### Native FIM
@@ -231,11 +239,16 @@ Three families, distinguished by FIM support:
   needs prompt construction logic that would dirty the OpenAI backend.
 
 ### Architectural prerequisites
-1. **Settings UI**: env-var-only stops scaling once the user has
-   multiple backends configured. GSettings schema + a small Prefs
-   widget (libpeas-gtk knows how to surface it). Settings include:
-   active backend, per-backend params (host/model/token-set for Ollama;
-   model name + base URL for OpenAI; etc.), debounce/timeout overrides.
+1. **Settings**: env-var-only stops scaling once the user has multiple
+   backends configured. Decision (2026-06-04): use a **human-editable JSON
+   config file** (e.g. `~/.config/llmghost/settings.json`, XDG-based, parsed
+   with json-glib, watched via `GFileMonitor` for live reload), **not
+   GSettings/dconf** — this is a gedit plugin, so users edit the config in
+   gedit itself, with no schema-compile or `dconf-editor` step. Settings
+   include: active backend, per-backend params, debounce/timeout overrides.
+   The backend constructors (`*_backend_new(base, model, key, ...)`) are what
+   the loader will call, so the backends are already forward-compatible. A
+   small Prefs entry point can later just open the JSON file in the editor.
 2. **Secret storage**: API keys via libsecret (`gnome-keyring`). NEVER
    plaintext in config or env vars committed to scripts.
 3. **Streaming (optional)**: cloud APIs return tokens over SSE.
