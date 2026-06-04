@@ -8,6 +8,7 @@ llmghost_sources = files(
   'llmghost-mistral-backend.c',
   'llmghost-openai-backend.c',
   'llmghost-overlay.c',
+  'llmghost-settings.c',
 )
 
 llmghost_headers = files(
