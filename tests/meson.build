@@ -63,6 +63,14 @@ test_openai_body = executable(
 )
 test('openai-body', test_openai_body, suite: 'unit')
 
+test_mistral_body = executable(
+  'test-mistral-body',
+  'test-mistral-body.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('mistral-body', test_mistral_body, suite: 'unit')
+
 if xvfb_run.found()
   test_controller = executable(
     'test-controller',
