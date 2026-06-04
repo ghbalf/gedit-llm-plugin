@@ -9,8 +9,9 @@
  *   LLMGHOST_OLLAMA_PORT    (default 11434)
  *   LLMGHOST_OLLAMA_MODEL   (default qwen3-coder-next:latest)
  *   LLMGHOST_OLLAMA_TOKENS  (default Qwen; one of: Qwen, StarCoder, DeepSeek)
- *   LLMGHOST_BACKEND        (default ollama; set "openai" for the OpenAI backend)
+ *   LLMGHOST_BACKEND        (default ollama; "openai" or "mistral" for those backends)
  *   LLMGHOST_OPENAI_BASE_URL / _MODEL / _API_KEY / _MODE  (OpenAI backend config)
+ *   LLMGHOST_MISTRAL_BASE_URL / _MODEL / _API_KEY         (Mistral backend config)
  */
 
 #include <gtk/gtk.h>
@@ -43,6 +44,12 @@ activate (GtkApplication *app, gpointer user_data)
       backend = llm_ghost_openai_backend_new (NULL, NULL, NULL,
                                               LLM_GHOST_OPENAI_MODE_CHAT);
       gtk_window_set_title (GTK_WINDOW (window), "llmghost demo (OpenAI)");
+    }
+  else if (which != NULL && g_ascii_strcasecmp (which, "mistral") == 0)
+    {
+      /* base/model/key all read from LLMGHOST_MISTRAL_* by the ctor. */
+      backend = llm_ghost_mistral_backend_new (NULL, NULL, NULL);
+      gtk_window_set_title (GTK_WINDOW (window), "llmghost demo (Mistral Codestral)");
     }
   else
     {
