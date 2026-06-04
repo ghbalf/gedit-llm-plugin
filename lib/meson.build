@@ -3,6 +3,7 @@ llmghost_sources = files(
   'llmghost-controller.c',
   'llmghost-fake-backend.c',
   'llmghost-fim-tokens.c',
+  'llmghost-http-util.c',
   'llmghost-ollama-backend.c',
   'llmghost-overlay.c',
 )
