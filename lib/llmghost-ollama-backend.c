@@ -88,10 +88,12 @@ _llm_ghost_ollama_build_request_body (const char              *model,
   json_builder_end_object (b); /* options */
   json_builder_end_object (b); /* root */
 
-  JsonGenerator *gen = json_generator_new ();
-  json_generator_set_root (gen, json_builder_get_root (b));
+  JsonGenerator *gen  = json_generator_new ();
+  JsonNode      *root = json_builder_get_root (b);   /* transfer full */
+  json_generator_set_root (gen, root);               /* transfer none */
   char *body = json_generator_to_data (gen, NULL);
 
+  json_node_unref (root);
   g_object_unref (gen);
   g_object_unref (b);
   g_free (fim);
