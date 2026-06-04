@@ -21,6 +21,7 @@ llmghost_headers = files(
   'llmghost-mistral-backend.h',
   'llmghost-openai-backend.h',
   'llmghost-overlay.h',
+  'llmghost-settings.h',
 )
 
 llmghost_deps = [

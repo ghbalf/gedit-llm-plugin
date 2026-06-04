@@ -1,9 +1,9 @@
 #pragma once
 
-/* Testing-only internal API for LlmGhostSettings. NOT installed.
- * Grows across the plan; Task 1 declares only the pure interpolation helper. */
+/* Testing-only internal API for LlmGhostSettings. NOT installed. */
 
 #include <glib.h>
+#include "llmghost-settings.h"
 
 G_BEGIN_DECLS
 
@@ -11,5 +11,9 @@ G_BEGIN_DECLS
  * to "" and logs a warning. A literal '$' not followed by '{', or a "${" with
  * no closing '}', is copied verbatim. @in may be NULL (→ ""). Newly-allocated. */
 char *_llm_ghost_settings_interpolate (const char *in);
+
+/* Build a settings object from a JSON string with no backing file and no
+ * monitor (test seam). Malformed JSON → built-in defaults. */
+LlmGhostSettings *_llm_ghost_settings_new_from_string (const char *json);
 
 G_END_DECLS

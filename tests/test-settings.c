@@ -1,4 +1,6 @@
 #include <glib.h>
+#include <json-glib/json-glib.h>
+#include "llmghost-settings.h"
 #include "llmghost-settings-internal.h"
 
 static void
@@ -62,6 +64,99 @@ test_interpolate_literal_dollar (void)
   g_free (b);
 }
 
+static void
+test_parse_active_backend (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"mistral\",\"backends\":{}}");
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "mistral");
+  g_object_unref (s);
+}
+
+static void
+test_parse_active_backend_default (void)
+{
+  /* Missing "backend" → "ollama". */
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{\"backends\":{}}");
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "ollama");
+  g_object_unref (s);
+}
+
+static void
+test_parse_unknown_backend_passthrough (void)
+{
+  /* An unrecognised but well-formed string is returned verbatim; the factory,
+   * not the accessor, maps unknown → ollama. */
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"frobnicate\"}");
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "frobnicate");
+  g_object_unref (s);
+}
+
+static void
+test_parse_debounce (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"debounce_ms\":120}");
+  guint ms = 0;
+  g_assert_true (llm_ghost_settings_get_debounce_ms (s, &ms));
+  g_assert_cmpuint (ms, ==, 120);
+  g_object_unref (s);
+}
+
+static void
+test_parse_debounce_absent (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{}");
+  guint ms = 999;
+  g_assert_false (llm_ghost_settings_get_debounce_ms (s, &ms));
+  g_object_unref (s);
+}
+
+static void
+test_parse_backend_params_interpolated (void)
+{
+  g_setenv ("LLMGHOST_TEST_KEY", "sk-xyz", TRUE);
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backends\":{\"openai\":{\"model\":\"gpt\",\"api_key\":\"${LLMGHOST_TEST_KEY}\"}}}");
+  JsonObject *p = llm_ghost_settings_get_backend_params (s, "openai");
+  g_assert_nonnull (p);
+  g_assert_cmpstr (json_object_get_string_member (p, "model"),   ==, "gpt");
+  g_assert_cmpstr (json_object_get_string_member (p, "api_key"), ==, "sk-xyz");
+  g_object_unref (s);
+  g_unsetenv ("LLMGHOST_TEST_KEY");
+}
+
+static void
+test_parse_underscore_key_ignored (void)
+{
+  /* "_help" is present but never interpreted; parsing still succeeds. */
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"_help\":\"hello\",\"backend\":\"openai\"}");
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "openai");
+  g_object_unref (s);
+}
+
+static void
+test_parse_malformed_uses_defaults (void)
+{
+  /* Built-in default backend is "ollama". The parse warning plus the
+   * interpolation warnings for the default template's three unset vars
+   * (${VARS}, ${OPENAI_API_KEY}, ${MISTRAL_API_KEY}) are expected. Unset them
+   * so the warning set is deterministic regardless of the ambient environment. */
+  g_unsetenv ("VARS");
+  g_unsetenv ("OPENAI_API_KEY");
+  g_unsetenv ("MISTRAL_API_KEY");
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "parse error:*");
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "*not set*");
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "*not set*");
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "*not set*");
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("this is not json {");
+  g_test_assert_expected_messages ();
+  g_assert_cmpstr (llm_ghost_settings_get_active_backend (s), ==, "ollama");
+  g_object_unref (s);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -72,5 +167,13 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/interpolate/multiple",       test_interpolate_multiple);
   g_test_add_func ("/settings/interpolate/unset",          test_interpolate_unset);
   g_test_add_func ("/settings/interpolate/literal-dollar", test_interpolate_literal_dollar);
+  g_test_add_func ("/settings/parse/active-backend",         test_parse_active_backend);
+  g_test_add_func ("/settings/parse/active-backend-default", test_parse_active_backend_default);
+  g_test_add_func ("/settings/parse/unknown-passthrough",    test_parse_unknown_backend_passthrough);
+  g_test_add_func ("/settings/parse/debounce",               test_parse_debounce);
+  g_test_add_func ("/settings/parse/debounce-absent",        test_parse_debounce_absent);
+  g_test_add_func ("/settings/parse/params-interpolated",    test_parse_backend_params_interpolated);
+  g_test_add_func ("/settings/parse/underscore-ignored",     test_parse_underscore_key_ignored);
+  g_test_add_func ("/settings/parse/malformed-defaults",     test_parse_malformed_uses_defaults);
   return g_test_run ();
 }
