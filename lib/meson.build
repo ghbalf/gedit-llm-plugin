@@ -5,6 +5,7 @@ llmghost_sources = files(
   'llmghost-fim-tokens.c',
   'llmghost-http-util.c',
   'llmghost-ollama-backend.c',
+  'llmghost-openai-backend.c',
   'llmghost-overlay.c',
 )
 
@@ -15,6 +16,7 @@ llmghost_headers = files(
   'llmghost-fake-backend.h',
   'llmghost-fim-tokens.h',
   'llmghost-ollama-backend.h',
+  'llmghost-openai-backend.h',
   'llmghost-overlay.h',
 )
 

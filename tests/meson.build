@@ -55,6 +55,14 @@ test_http_util = executable(
 )
 test('http-util', test_http_util, suite: 'unit')
 
+test_openai_body = executable(
+  'test-openai-body',
+  'test-openai-body.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('openai-body', test_openai_body, suite: 'unit')
+
 if xvfb_run.found()
   test_controller = executable(
     'test-controller',
