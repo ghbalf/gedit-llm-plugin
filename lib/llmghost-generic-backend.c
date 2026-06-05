@@ -1,9 +1,13 @@
 #define G_LOG_DOMAIN "llmghost-generic"
 
 #include "llmghost-generic-backend-internal.h"
+#include "llmghost-generic-backend.h"
+#include "llmghost-text-util.h"
+#include "llmghost-http-util.h"
 
 #include <string.h>
 #include <gio/gio.h>
+#include <libsoup/soup.h>
 
 /* ---- template substitution --------------------------------------------- */
 
@@ -177,4 +181,154 @@ _llm_ghost_generic_extract (JsonNode *root, const char *path, GError **error)
     }
 
   return g_strdup (json_node_get_string (cur));
+}
+
+/* ---- type --------------------------------------------------------------- */
+
+#define REQUEST_TIMEOUT_SEC 30
+
+struct _LlmGhostGenericBackend
+{
+  GObject      parent_instance;
+
+  SoupSession *session;
+  char        *url;
+  JsonObject  *headers;            /* owned ref, or NULL */
+  char        *model;              /* or NULL */
+  JsonObject  *request_template;   /* owned ref, or NULL */
+  char        *response_path;
+};
+
+static void llm_ghost_generic_backend_iface_init (LlmGhostBackendInterface *iface);
+
+G_DEFINE_TYPE_WITH_CODE (LlmGhostGenericBackend, llm_ghost_generic_backend, G_TYPE_OBJECT,
+                         G_IMPLEMENT_INTERFACE (LLM_GHOST_TYPE_BACKEND,
+                                                llm_ghost_generic_backend_iface_init))
+
+/* ---- request flow ------------------------------------------------------- */
+
+static void
+on_http_done (GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  (void) source;
+  GTask  *task  = G_TASK (user_data);
+  GError *error = NULL;
+
+  JsonNode *root = _llm_ghost_http_post_json_finish (result, &error);
+  if (error != NULL)
+    {
+      g_task_return_error (task, error);
+      g_object_unref (task);
+      return;
+    }
+
+  LlmGhostGenericBackend *self = g_task_get_source_object (task);
+  char *raw = _llm_ghost_generic_extract (root, self->response_path, &error);
+  json_node_unref (root);
+  if (raw == NULL)
+    {
+      g_task_return_error (task, error);
+      g_object_unref (task);
+      return;
+    }
+
+  char *clean = _llm_ghost_clean_single_line (raw);
+  g_free (raw);
+  g_task_return_pointer (task, clean, g_free);
+  g_object_unref (task);
+}
+
+static void
+generic_request (LlmGhostBackend     *backend,
+                 const char          *prefix,
+                 const char          *suffix,
+                 GCancellable        *cancellable,
+                 GAsyncReadyCallback  callback,
+                 gpointer             user_data)
+{
+  LlmGhostGenericBackend *self = LLM_GHOST_GENERIC_BACKEND (backend);
+  GTask *task = g_task_new (self, cancellable, callback, user_data);
+
+  if (self->request_template == NULL || self->url == NULL || *self->url == '\0' ||
+      self->response_path == NULL || *self->response_path == '\0')
+    {
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                               "generic backend: incomplete configuration");
+      g_object_unref (task);
+      return;
+    }
+
+  char *body = _llm_ghost_generic_build_body (self->request_template,
+                                              prefix, suffix, self->model);
+  _llm_ghost_http_post_json_headers_async (self->session, self->url, self->headers,
+                                           body, cancellable, on_http_done, task);
+}
+
+static char *
+generic_request_finish (LlmGhostBackend *backend, GAsyncResult *result, GError **error)
+{
+  (void) backend;
+  return g_task_propagate_pointer (G_TASK (result), error);
+}
+
+static void
+llm_ghost_generic_backend_iface_init (LlmGhostBackendInterface *iface)
+{
+  iface->request        = generic_request;
+  iface->request_finish = generic_request_finish;
+}
+
+/* ---- GObject lifecycle -------------------------------------------------- */
+
+static void
+llm_ghost_generic_backend_finalize (GObject *object)
+{
+  LlmGhostGenericBackend *self = LLM_GHOST_GENERIC_BACKEND (object);
+  g_clear_object  (&self->session);
+  g_clear_pointer (&self->url, g_free);
+  g_clear_pointer (&self->headers, json_object_unref);
+  g_clear_pointer (&self->model, g_free);
+  g_clear_pointer (&self->request_template, json_object_unref);
+  g_clear_pointer (&self->response_path, g_free);
+  G_OBJECT_CLASS (llm_ghost_generic_backend_parent_class)->finalize (object);
+}
+
+static void
+llm_ghost_generic_backend_class_init (LlmGhostGenericBackendClass *klass)
+{
+  G_OBJECT_CLASS (klass)->finalize = llm_ghost_generic_backend_finalize;
+}
+
+static void
+llm_ghost_generic_backend_init (LlmGhostGenericBackend *self)
+{
+  self->session = soup_session_new ();
+  soup_session_set_timeout (self->session, REQUEST_TIMEOUT_SEC);
+}
+
+/* ---- construction ------------------------------------------------------- */
+
+LlmGhostBackend *
+llm_ghost_generic_backend_new (const char *url,
+                               JsonObject *headers,
+                               const char *model,
+                               JsonObject *request_template,
+                               const char *response_path)
+{
+  LlmGhostGenericBackend *self = g_object_new (LLM_GHOST_TYPE_GENERIC_BACKEND, NULL);
+
+  self->url              = g_strdup (url);
+  self->headers          = headers          ? json_object_ref (headers)          : NULL;
+  self->model            = g_strdup (model);
+  self->request_template = request_template ? json_object_ref (request_template) : NULL;
+  self->response_path    = g_strdup (response_path);
+
+  if (url == NULL || *url == '\0')
+    g_warning ("generic backend: no \"url\" configured; requests will fail");
+  if (request_template == NULL)
+    g_warning ("generic backend: no \"request_template\" configured; requests will fail");
+  if (response_path == NULL || *response_path == '\0')
+    g_warning ("generic backend: no \"response_path\" configured; requests will fail");
+
+  return LLM_GHOST_BACKEND (self);
 }

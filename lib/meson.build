@@ -24,6 +24,7 @@ llmghost_headers = files(
   'llmghost-ollama-backend.h',
   'llmghost-mistral-backend.h',
   'llmghost-openai-backend.h',
+  'llmghost-generic-backend.h',
   'llmghost-overlay.h',
   'llmghost-settings.h',
 )
