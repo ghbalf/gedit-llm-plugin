@@ -71,6 +71,14 @@ test_mistral_body = executable(
 )
 test('mistral-body', test_mistral_body, suite: 'unit')
 
+test_settings = executable(
+  'test-settings',
+  'test-settings.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('settings', test_settings, suite: 'unit')
+
 if xvfb_run.found()
   test_controller = executable(
     'test-controller',

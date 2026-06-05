@@ -8,10 +8,12 @@ plugin_install_dir = home_dir / '.local' / 'share' / 'gedit' / 'plugins' / 'llmg
 shared_module(
   'llmghost',                       # produces libllmghost.so to match Module=llmghost
   'llmghost-plugin.c',
+  'llmghost-configurable.c',
   dependencies: [
     llmghost_dep,
     gedit_dep,
     peas_dep,
+    peas_gtk_dep,
     gtk_dep,
     glib_dep,
     gobject_dep,

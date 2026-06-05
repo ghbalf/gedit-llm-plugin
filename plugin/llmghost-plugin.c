@@ -3,6 +3,7 @@
  * libllmghost. See ../NOTES.md "Phase 3" for the design rationale. */
 
 #include "llmghost-plugin.h"
+#include "llmghost-configurable.h"
 
 #include <gedit/gedit-window.h>
 #include <gedit/gedit-window-activatable.h>
@@ -24,10 +25,12 @@ struct _LlmghostPlugin
   PeasExtensionBase  parent_instance;
 
   GeditWindow       *window;          /* injected by libpeas via PROP_WINDOW */
-  LlmGhostBackend   *backend;         /* one Ollama session per window */
+  LlmGhostSettings  *settings;        /* owns the config file + monitor */
+  LlmGhostBackend   *backend;         /* rebuilt from settings on "changed" */
 
   gulong             h_tab_added;
   gulong             h_tab_removed;
+  gulong             h_settings_changed;
 };
 
 static void llmghost_plugin_iface_init (GeditWindowActivatableInterface *iface);
@@ -51,6 +54,10 @@ attach_controller (LlmghostPlugin *self, GeditView *view)
   LlmGhostController *ctrl = llm_ghost_controller_new (
     GTK_TEXT_VIEW (view), self->backend);
 
+  guint ms;
+  if (llm_ghost_settings_get_debounce_ms (self->settings, &ms))
+    llm_ghost_controller_set_debounce_ms (ctrl, ms);
+
   /* Lifetime tied to the view: when the view is destroyed (tab close,
    * window close), the destroy notify drops the last ref on the
    * controller, which disconnects its signal handlers in finalize. */
@@ -64,6 +71,22 @@ detach_controller (GeditView *view)
   /* Setting the data to NULL fires the destroy notify (g_object_unref)
    * on the controller — same teardown path as view destruction. */
   g_object_set_data (G_OBJECT (view), CONTROLLER_DATA_KEY, NULL);
+}
+
+/* Tear down and rebuild every view's controller so each binds to the current
+ * self->backend and debounce setting. Called after a settings reload swaps the
+ * backend. Requires self->backend to be non-NULL (attach_controller reads it).
+ * Any ghost text in progress is discarded — acceptable for a config change. */
+static void
+reattach_all (LlmghostPlugin *self)
+{
+  GList *views = gedit_window_get_views (self->window);
+  for (GList *l = views; l != NULL; l = l->next)
+    {
+      detach_controller (GEDIT_VIEW (l->data));
+      attach_controller (self, GEDIT_VIEW (l->data));
+    }
+  g_list_free (views);
 }
 
 /* ---- signal handlers --------------------------------------------------- */
@@ -85,6 +108,21 @@ on_tab_removed (GeditWindow *window, GeditTab *tab, gpointer user_data)
   (void) window; (void) tab; (void) user_data;
 }
 
+static void
+on_settings_changed (LlmGhostSettings *settings, gpointer user_data)
+{
+  (void) settings;
+  LlmghostPlugin *self = LLMGHOST_PLUGIN (user_data);
+
+  /* Build the new backend, then swap every controller onto it. Dropping the
+   * plugin's ref here does not free the old backend while a request is still
+   * in flight: each controller holds its own ref and is cancelled+unref'd as
+   * reattach_all detaches it, so the old backend outlives any pending callback. */
+  g_clear_object (&self->backend);
+  self->backend = llm_ghost_backend_new_from_settings (self->settings);
+  reattach_all (self);
+}
+
 /* ---- GeditWindowActivatable virtuals ----------------------------------- */
 
 static void
@@ -92,10 +130,9 @@ llmghost_plugin_activate (GeditWindowActivatable *activatable)
 {
   LlmghostPlugin *self = LLMGHOST_PLUGIN (activatable);
 
-  /* One backend serves every view in this window. The controllers each
-   * cancel-in-flight on their own buffer changes, so sharing a single
-   * SoupSession across views is safe and avoids per-view connection setup. */
-  self->backend = llm_ghost_ollama_backend_new (NULL, 0, NULL);
+  /* One settings object (and one backend) serves every view in this window. */
+  self->settings = llm_ghost_settings_new (NULL);
+  self->backend  = llm_ghost_backend_new_from_settings (self->settings);
 
   GList *views = gedit_window_get_views (self->window);
   for (GList *l = views; l != NULL; l = l->next)
@@ -106,6 +143,8 @@ llmghost_plugin_activate (GeditWindowActivatable *activatable)
                                         G_CALLBACK (on_tab_added), self);
   self->h_tab_removed = g_signal_connect (self->window, "tab-removed",
                                           G_CALLBACK (on_tab_removed), self);
+  self->h_settings_changed = g_signal_connect (self->settings, "changed",
+                                               G_CALLBACK (on_settings_changed), self);
 }
 
 static void
@@ -113,6 +152,11 @@ llmghost_plugin_deactivate (GeditWindowActivatable *activatable)
 {
   LlmghostPlugin *self = LLMGHOST_PLUGIN (activatable);
 
+  if (self->h_settings_changed != 0)
+    {
+      g_signal_handler_disconnect (self->settings, self->h_settings_changed);
+      self->h_settings_changed = 0;
+    }
   if (self->h_tab_added != 0)
     {
       g_signal_handler_disconnect (self->window, self->h_tab_added);
@@ -130,6 +174,7 @@ llmghost_plugin_deactivate (GeditWindowActivatable *activatable)
   g_list_free (views);
 
   g_clear_object (&self->backend);
+  g_clear_object (&self->settings);   /* drops the GFileMonitor */
 }
 
 static void
@@ -180,6 +225,7 @@ llmghost_plugin_finalize (GObject *object)
 {
   LlmghostPlugin *self = LLMGHOST_PLUGIN (object);
   g_clear_object (&self->backend);
+  g_clear_object (&self->settings);
   G_OBJECT_CLASS (llmghost_plugin_parent_class)->finalize (object);
 }
 
@@ -217,4 +263,5 @@ peas_register_types (PeasObjectModule *module)
   peas_object_module_register_extension_type (module,
                                               GEDIT_TYPE_WINDOW_ACTIVATABLE,
                                               LLMGHOST_TYPE_PLUGIN);
+  llmghost_configurable_register (module);
 }
