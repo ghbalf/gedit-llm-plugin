@@ -9,6 +9,20 @@
 
 G_BEGIN_DECLS
 
+/* POST @json_body to @url with arbitrary request @headers (each member of the
+ * JsonObject is sent as "name: value"; non-string values are skipped with a
+ * warning). Sets "Content-Type: application/json" unless @headers supplies its
+ * own "Content-Type". Takes ownership of @json_body (frees it). @session,
+ * @cancellable, @headers are borrowed. Finish with the same
+ * _llm_ghost_http_post_json_finish() below. */
+void       _llm_ghost_http_post_json_headers_async (SoupSession         *session,
+                                                    const char          *url,
+                                                    JsonObject          *headers,
+                                                    char                *json_body,
+                                                    GCancellable        *cancellable,
+                                                    GAsyncReadyCallback  callback,
+                                                    gpointer             user_data);
+
 /* POST @json_body to @url. Attaches "Authorization: Bearer <bearer>" iff
  * @bearer is non-NULL and non-empty. Takes ownership of @json_body (frees it).
  * @session and @cancellable are borrowed. */

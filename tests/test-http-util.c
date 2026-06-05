@@ -10,6 +10,8 @@ typedef struct {
   char *last_auth;          /* captured Authorization header ("" if none) */
   char *last_content_type;  /* captured Content-Type */
   char *last_body;          /* captured request body */
+  char *last_xapikey;       /* captured x-api-key header ("" if none) */
+  char *last_anthropic_ver; /* captured anthropic-version header ("" if none) */
 } Captured;
 
 static void
@@ -27,6 +29,13 @@ server_cb (SoupServer *server, SoupServerMessage *m, const char *path,
   g_clear_pointer (&cap->last_body, g_free);
   cap->last_auth = g_strdup (auth ? auth : "");
   cap->last_content_type = g_strdup (ct ? ct : "");
+
+  const char *xak = soup_message_headers_get_one (h, "x-api-key");
+  const char *av  = soup_message_headers_get_one (h, "anthropic-version");
+  g_clear_pointer (&cap->last_xapikey, g_free);
+  g_clear_pointer (&cap->last_anthropic_ver, g_free);
+  cap->last_xapikey      = g_strdup (xak ? xak : "");
+  cap->last_anthropic_ver = g_strdup (av ? av : "");
 
   SoupMessageBody *body = soup_server_message_get_request_body (m);
   cap->last_body = g_strndup (body->data ? body->data : "", body->length);
@@ -87,6 +96,8 @@ srv_free (Srv *s)
   g_free (s->cap.last_auth);
   g_free (s->cap.last_content_type);
   g_free (s->cap.last_body);
+  g_free (s->cap.last_xapikey);
+  g_free (s->cap.last_anthropic_ver);
   g_free (s);
 }
 
@@ -105,6 +116,25 @@ on_done (GObject *source, GAsyncResult *result, gpointer user_data)
   Wait *w = user_data;
   w->node = _llm_ghost_http_post_json_finish (result, &w->error);
   g_main_loop_quit (w->loop);
+}
+
+static JsonNode *
+post_headers (Srv *s, const char *path, JsonObject *headers, const char *body, GError **error)
+{
+  SoupSession *session = soup_session_new ();
+  GMainLoop *loop = g_main_loop_new (NULL, FALSE);
+  Wait w = { .loop = loop };
+  char *url = g_strconcat (s->base, path + 1, NULL);
+
+  _llm_ghost_http_post_json_headers_async (session, url, headers, g_strdup (body),
+                                           NULL, on_done, &w);
+  g_main_loop_run (loop);
+
+  g_free (url);
+  g_main_loop_unref (loop);
+  g_object_unref (session);
+  if (error != NULL) *error = w.error; else g_clear_error (&w.error);
+  return w.node;
 }
 
 static JsonNode *
@@ -188,6 +218,40 @@ test_malformed_json_is_error (void)
   srv_free (s);
 }
 
+static void
+test_custom_headers (void)
+{
+  Srv *s = srv_new ();
+  JsonObject *headers = json_object_new ();
+  json_object_set_string_member (headers, "x-api-key", "secret-key");
+  json_object_set_string_member (headers, "anthropic-version", "2023-06-01");
+
+  JsonNode *node = post_headers (s, "/ok", headers, "{\"x\":1}", NULL);
+  g_assert_nonnull (node);
+
+  g_assert_cmpstr (s->cap.last_xapikey,       ==, "secret-key");
+  g_assert_cmpstr (s->cap.last_anthropic_ver, ==, "2023-06-01");
+  g_assert_cmpstr (s->cap.last_auth,          ==, "");                 /* no Bearer */
+  g_assert_true (g_str_has_prefix (s->cap.last_content_type, "application/json"));
+
+  json_node_unref (node);
+  json_object_unref (headers);
+  srv_free (s);
+}
+
+static void
+test_bearer_wrapper_still_works (void)
+{
+  /* The reimplemented Bearer call must still send Authorization through the
+   * new core. */
+  Srv *s = srv_new ();
+  JsonNode *node = post (s, "/ok", "tok", "{}", NULL);
+  g_assert_nonnull (node);
+  g_assert_cmpstr (s->cap.last_auth, ==, "Bearer tok");
+  json_node_unref (node);
+  srv_free (s);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -196,5 +260,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/http-util/ok-without-bearer", test_ok_without_bearer);
   g_test_add_func ("/http-util/http-500",          test_http_500_is_error);
   g_test_add_func ("/http-util/malformed-json",    test_malformed_json_is_error);
+  g_test_add_func ("/http-util/custom-headers",  test_custom_headers);
+  g_test_add_func ("/http-util/bearer-wrapper",  test_bearer_wrapper_still_works);
   return g_test_run ();
 }

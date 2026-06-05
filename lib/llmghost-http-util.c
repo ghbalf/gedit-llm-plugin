@@ -1,3 +1,5 @@
+#define G_LOG_DOMAIN "llmghost-http-util"
+
 #include "llmghost-http-util.h"
 #include <string.h>
 
@@ -59,13 +61,13 @@ on_soup_response (GObject *source, GAsyncResult *result, gpointer user_data)
 }
 
 void
-_llm_ghost_http_post_json_async (SoupSession         *session,
-                                 const char          *url,
-                                 const char          *bearer,
-                                 char                *json_body,
-                                 GCancellable        *cancellable,
-                                 GAsyncReadyCallback  callback,
-                                 gpointer             user_data)
+_llm_ghost_http_post_json_headers_async (SoupSession         *session,
+                                         const char          *url,
+                                         JsonObject          *headers,
+                                         char                *json_body,
+                                         GCancellable        *cancellable,
+                                         GAsyncReadyCallback  callback,
+                                         gpointer             user_data)
 {
   GTask *task = g_task_new (session, cancellable, callback, user_data);
 
@@ -79,16 +81,36 @@ _llm_ghost_http_post_json_async (SoupSession         *session,
       return;
     }
 
-  if (bearer != NULL && *bearer != '\0')
+  /* Apply caller headers. A caller-supplied Content-Type wins over the JSON
+   * default; we route it through set_request_body_from_bytes (below) rather
+   * than appending, so it is never duplicated. */
+  const char *content_type = "application/json";
+  SoupMessageHeaders *h = soup_message_get_request_headers (msg);
+  if (headers != NULL)
     {
-      SoupMessageHeaders *h = soup_message_get_request_headers (msg);
-      char *auth = g_strdup_printf ("Bearer %s", bearer);
-      soup_message_headers_append (h, "Authorization", auth);
-      g_free (auth);
+      JsonObjectIter iter;
+      const char *name;
+      JsonNode *val;
+      json_object_iter_init (&iter, headers);
+      while (json_object_iter_next (&iter, &name, &val))
+        {
+          if (!JSON_NODE_HOLDS_VALUE (val) ||
+              json_node_get_value_type (val) != G_TYPE_STRING)
+            {
+              g_warning ("header \"%s\" is not a string; skipping", name);
+              continue;
+            }
+          if (g_ascii_strcasecmp (name, "Content-Type") == 0)
+            {
+              content_type = json_node_get_string (val);   /* borrowed; used now */
+              continue;
+            }
+          soup_message_headers_append (h, name, json_node_get_string (val));
+        }
     }
 
   GBytes *bytes = g_bytes_new_take (json_body, strlen (json_body));
-  soup_message_set_request_body_from_bytes (msg, "application/json", bytes);
+  soup_message_set_request_body_from_bytes (msg, content_type, bytes);
   g_bytes_unref (bytes);
 
   /* Keep the SoupMessage alive until the handler reads its status. */
@@ -96,6 +118,32 @@ _llm_ghost_http_post_json_async (SoupSession         *session,
 
   soup_session_send_and_read_async (session, msg, G_PRIORITY_DEFAULT,
                                     cancellable, on_soup_response, task);
+}
+
+void
+_llm_ghost_http_post_json_async (SoupSession         *session,
+                                 const char          *url,
+                                 const char          *bearer,
+                                 char                *json_body,
+                                 GCancellable        *cancellable,
+                                 GAsyncReadyCallback  callback,
+                                 gpointer             user_data)
+{
+  JsonObject *headers = NULL;
+  if (bearer != NULL && *bearer != '\0')
+    {
+      char *auth = g_strdup_printf ("Bearer %s", bearer);
+      headers = json_object_new ();
+      json_object_set_string_member (headers, "Authorization", auth);
+      g_free (auth);
+    }
+
+  /* The core consumes @json_body and reads @headers synchronously before the
+   * async send returns, so unref-ing headers right after the call is safe. */
+  _llm_ghost_http_post_json_headers_async (session, url, headers, json_body,
+                                           cancellable, callback, user_data);
+  if (headers != NULL)
+    json_object_unref (headers);
 }
 
 JsonNode *
