@@ -3,6 +3,7 @@
  * libllmghost. See ../NOTES.md "Phase 3" for the design rationale. */
 
 #include "llmghost-plugin.h"
+#include "llmghost-configurable.h"
 
 #include <gedit/gedit-window.h>
 #include <gedit/gedit-window-activatable.h>
@@ -262,4 +263,5 @@ peas_register_types (PeasObjectModule *module)
   peas_object_module_register_extension_type (module,
                                               GEDIT_TYPE_WINDOW_ACTIVATABLE,
                                               LLMGHOST_TYPE_PLUGIN);
+  llmghost_configurable_register (module);
 }

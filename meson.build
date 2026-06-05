@@ -18,7 +18,8 @@ gio_dep     = dependency('gio-2.0')
 soup_dep    = dependency('libsoup-3.0',  version: '>= 3.0')
 json_dep    = dependency('json-glib-1.0', version: '>= 1.6')
 gedit_dep   = dependency('gedit',        version: '>= 46')
-peas_dep    = dependency('libpeas-1.0',  version: '>= 1.20')
+peas_dep     = dependency('libpeas-1.0',     version: '>= 1.20')
+peas_gtk_dep = dependency('libpeas-gtk-1.0', version: '>= 1.20')
 
 # Headless GTK tests run under a virtual framebuffer. We wrap only the gui
 # test in xvfb-run (see tests/meson.build) rather than making it a default
