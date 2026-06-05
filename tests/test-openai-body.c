@@ -70,27 +70,6 @@ test_chat_body (void)
 }
 
 static void
-check_clean (const char *raw, const char *expect)
-{
-  char *got = _llm_ghost_openai_clean_chat_completion (raw);
-  g_assert_cmpstr (got, ==, expect);
-  g_free (got);
-}
-
-static void
-test_clean_chat_completion (void)
-{
-  check_clean ("abc", "abc");
-  check_clean ("  abc  ", "abc");
-  check_clean (NULL, "");
-  check_clean ("", "");
-  check_clean ("foo()\nbar()", "foo()");                    /* truncate at newline */
-  check_clean ("```\nfoo()\n```", "foo()");                 /* bare fence */
-  check_clean ("```c\nfoo()\n```", "foo()");                /* lang-tagged fence */
-  check_clean ("```python\nx = 1\ny = 2\n```", "x = 1");    /* fence + truncate */
-}
-
-static void
 test_extract_completions (void)
 {
   JsonNode *node = parse_node ("{\"choices\":[{\"text\":\"hello\"}]}");
@@ -173,7 +152,6 @@ main (int argc, char *argv[])
   g_test_init (&argc, &argv, NULL);
   g_test_add_func ("/openai-body/completions",      test_completions_body);
   g_test_add_func ("/openai-body/chat",             test_chat_body);
-  g_test_add_func ("/openai-body/clean",            test_clean_chat_completion);
   g_test_add_func ("/openai-body/extract-completions", test_extract_completions);
   g_test_add_func ("/openai-body/extract-chat",     test_extract_chat_cleans);
   g_test_add_func ("/openai-body/extract-error",    test_extract_error_object);

@@ -4,6 +4,7 @@
 #include <libsoup/soup.h>
 #include <string.h>
 #include "llmghost-http-util.h"
+#include "llmghost-text-util.h"
 
 #define CHAT_SYSTEM_PROMPT \
   "You are a code completion engine. Output only the code that belongs " \
@@ -108,43 +109,6 @@ _llm_ghost_openai_build_chat_body (const char *model,
   return finish_builder (b);
 }
 
-/* ---- response cleanup --------------------------------------------------- */
-
-char *
-_llm_ghost_openai_clean_chat_completion (const char *raw)
-{
-  if (raw == NULL)
-    return g_strdup ("");
-
-  char *trimmed = g_strdup (raw);
-  g_strstrip (trimmed);                 /* trims leading + trailing whitespace */
-
-  char *unfenced = trimmed;             /* may be reassigned to a new alloc */
-  if (g_str_has_prefix (trimmed, "```"))
-    {
-      const char *nl = strchr (trimmed, '\n');
-      if (nl != NULL)
-        {
-          const char *inner = nl + 1;
-          char *close = g_strrstr (inner, "```");
-          unfenced = close != NULL
-                       ? g_strndup (inner, (gsize) (close - inner))
-                       : g_strdup (inner);
-          g_strstrip (unfenced);
-        }
-    }
-
-  const char *nl2 = strchr (unfenced, '\n');
-  char *result = nl2 != NULL
-                   ? g_strndup (unfenced, (gsize) (nl2 - unfenced))
-                   : g_strdup (unfenced);
-
-  if (unfenced != trimmed)
-    g_free (unfenced);
-  g_free (trimmed);
-  return result;
-}
-
 /* ---- response extraction ------------------------------------------------ */
 
 char *
@@ -204,7 +168,7 @@ _llm_ghost_openai_extract_completion (JsonNode           *root,
       if (m != NULL && json_object_has_member (m, "content"))
         content = json_object_get_string_member (m, "content");
     }
-  return _llm_ghost_openai_clean_chat_completion (content);
+  return _llm_ghost_clean_single_line (content);
 }
 
 /* ---- type --------------------------------------------------------------- */

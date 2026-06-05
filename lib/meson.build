@@ -10,6 +10,7 @@ llmghost_sources = files(
   'llmghost-openai-backend.c',
   'llmghost-overlay.c',
   'llmghost-settings.c',
+  'llmghost-text-util.c',
 )
 
 llmghost_headers = files(
