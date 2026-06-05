@@ -3,6 +3,7 @@
 #include "llmghost-generic-backend-internal.h"
 
 #include <string.h>
+#include <gio/gio.h>
 
 /* ---- template substitution --------------------------------------------- */
 
@@ -93,4 +94,87 @@ _llm_ghost_generic_build_body (JsonObject *template,
   g_object_unref (gen);
   json_node_unref (copy);
   return out;
+}
+
+/* ---- response-path extraction ------------------------------------------ */
+
+static gboolean
+seg_is_index (const char *seg)
+{
+  if (*seg == '\0')
+    return FALSE;
+  for (const char *p = seg; *p != '\0'; p++)
+    if (!g_ascii_isdigit (*p))
+      return FALSE;
+  return TRUE;
+}
+
+char *
+_llm_ghost_generic_extract (JsonNode *root, const char *path, GError **error)
+{
+  if (root == NULL || path == NULL)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "generic: null response or response_path");
+      return NULL;
+    }
+
+  char **segs = g_strsplit (path, ".", -1);
+  JsonNode *cur = root;
+
+  for (int i = 0; segs[i] != NULL; i++)
+    {
+      const char *seg = segs[i];
+      if (seg_is_index (seg))
+        {
+          if (!JSON_NODE_HOLDS_ARRAY (cur))
+            {
+              g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "generic: response_path segment \"%s\" expected an array", seg);
+              g_strfreev (segs);
+              return NULL;
+            }
+          JsonArray *arr = json_node_get_array (cur);
+          guint64 idx = g_ascii_strtoull (seg, NULL, 10);
+          if (idx >= json_array_get_length (arr))
+            {
+              g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "generic: response_path index %s out of range", seg);
+              g_strfreev (segs);
+              return NULL;
+            }
+          cur = json_array_get_element (arr, (guint) idx);
+        }
+      else
+        {
+          if (!JSON_NODE_HOLDS_OBJECT (cur))
+            {
+              g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "generic: response_path segment \"%s\" expected an object", seg);
+              g_strfreev (segs);
+              return NULL;
+            }
+          JsonObject *obj = json_node_get_object (cur);
+          if (!json_object_has_member (obj, seg))
+            {
+              g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "generic: response_path member \"%s\" not found", seg);
+              g_strfreev (segs);
+              return NULL;
+            }
+          cur = json_object_get_member (obj, seg);
+        }
+    }
+
+  g_strfreev (segs);
+
+  if (cur == NULL || !JSON_NODE_HOLDS_VALUE (cur) ||
+      json_node_get_value_type (cur) != G_TYPE_STRING)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                           "generic: response_path did not resolve to a string");
+      return NULL;
+    }
+
+  return g_strdup (json_node_get_string (cur));
 }

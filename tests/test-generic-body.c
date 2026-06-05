@@ -1,4 +1,5 @@
 #include <glib.h>
+#include <gio/gio.h>
 #include <json-glib/json-glib.h>
 #include "llmghost-generic-backend-internal.h"
 
@@ -130,6 +131,149 @@ test_build_no_placeholders (void)
   json_object_unref (t);
 }
 
+static JsonNode *
+node_from (const char *json)
+{
+  JsonParser *parser = json_parser_new ();
+  GError *error = NULL;
+  g_assert_true (json_parser_load_from_data (parser, json, -1, &error));
+  g_assert_no_error (error);
+  JsonNode *node = json_node_copy (json_parser_get_root (parser));
+  g_object_unref (parser);
+  return node;
+}
+
+static void
+test_extract_object_leaf (void)
+{
+  JsonNode *n = node_from ("{\"a\":\"hi\"}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "a", &error);
+  g_assert_no_error (error);
+  g_assert_cmpstr (r, ==, "hi");
+  g_free (r);
+  json_node_unref (n);
+}
+
+static void
+test_extract_array_index (void)
+{
+  JsonNode *n = node_from ("{\"c\":[\"x\",\"y\"]}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "c.1", &error);
+  g_assert_no_error (error);
+  g_assert_cmpstr (r, ==, "y");
+  g_free (r);
+  json_node_unref (n);
+}
+
+static void
+test_extract_anthropic_path (void)
+{
+  JsonNode *n = node_from ("{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "content.0.text", &error);
+  g_assert_no_error (error);
+  g_assert_cmpstr (r, ==, "done");
+  g_free (r);
+  json_node_unref (n);
+}
+
+static void
+test_extract_gemini_path (void)
+{
+  JsonNode *n = node_from (
+    "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"g\"}]}}]}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "candidates.0.content.parts.0.text", &error);
+  g_assert_no_error (error);
+  g_assert_cmpstr (r, ==, "g");
+  g_free (r);
+  json_node_unref (n);
+}
+
+static void
+test_extract_missing_member (void)
+{
+  JsonNode *n = node_from ("{\"a\":{}}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "a.b", &error);
+  g_assert_null (r);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  g_clear_error (&error);
+  json_node_unref (n);
+}
+
+static void
+test_extract_index_out_of_range (void)
+{
+  JsonNode *n = node_from ("{\"c\":[]}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "c.0", &error);
+  g_assert_null (r);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  g_clear_error (&error);
+  json_node_unref (n);
+}
+
+static void
+test_extract_index_into_object (void)
+{
+  JsonNode *n = node_from ("{\"a\":{}}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "a.0", &error);
+  g_assert_null (r);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  g_clear_error (&error);
+  json_node_unref (n);
+}
+
+static void
+test_extract_member_of_array (void)
+{
+  JsonNode *n = node_from ("{\"c\":[]}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "c.x", &error);
+  g_assert_null (r);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  g_clear_error (&error);
+  json_node_unref (n);
+}
+
+static void
+test_extract_non_string_leaf (void)
+{
+  JsonNode *n = node_from ("{\"a\":5}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, "a", &error);
+  g_assert_null (r);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  g_clear_error (&error);
+  json_node_unref (n);
+}
+
+static void
+test_extract_null_root (void)
+{
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (NULL, "a", &error);
+  g_assert_null (r);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  g_clear_error (&error);
+}
+
+static void
+test_extract_null_path (void)
+{
+  JsonNode *n = node_from ("{\"a\":\"x\"}");
+  GError *error = NULL;
+  char *r = _llm_ghost_generic_extract (n, NULL, &error);
+  g_assert_null (r);
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  g_clear_error (&error);
+  json_node_unref (n);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -143,5 +287,16 @@ main (int argc, char *argv[])
   g_test_add_func ("/generic-body/empty-token",       test_build_empty_token_verbatim);
   g_test_add_func ("/generic-body/single-pass-safety", test_build_single_pass_safety);
   g_test_add_func ("/generic-body/no-placeholders",   test_build_no_placeholders);
+  g_test_add_func ("/generic-body/extract-object",      test_extract_object_leaf);
+  g_test_add_func ("/generic-body/extract-array",       test_extract_array_index);
+  g_test_add_func ("/generic-body/extract-anthropic",   test_extract_anthropic_path);
+  g_test_add_func ("/generic-body/extract-gemini",      test_extract_gemini_path);
+  g_test_add_func ("/generic-body/extract-missing",     test_extract_missing_member);
+  g_test_add_func ("/generic-body/extract-oob",         test_extract_index_out_of_range);
+  g_test_add_func ("/generic-body/extract-index-obj",   test_extract_index_into_object);
+  g_test_add_func ("/generic-body/extract-member-arr",  test_extract_member_of_array);
+  g_test_add_func ("/generic-body/extract-nonstring",   test_extract_non_string_leaf);
+  g_test_add_func ("/generic-body/extract-null-root",   test_extract_null_root);
+  g_test_add_func ("/generic-body/extract-null-path",   test_extract_null_path);
   return g_test_run ();
 }
