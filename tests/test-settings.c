@@ -8,6 +8,7 @@
 #include "llmghost-ollama-backend.h"
 #include "llmghost-openai-backend.h"
 #include "llmghost-mistral-backend.h"
+#include "llmghost-generic-backend.h"
 
 static void
 test_interpolate_null (void)
@@ -323,6 +324,23 @@ test_factory_missing_params_ok (void)
   g_object_unref (s);
 }
 
+static void
+test_factory_generic (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"generic\","
+    "\"backends\":{\"generic\":{"
+      "\"url\":\"http://x/v1\","
+      "\"headers\":{\"x-api-key\":\"k\"},"
+      "\"model\":\"m\","
+      "\"request_template\":{\"messages\":[{\"content\":\"{{prefix}}\"}]},"
+      "\"response_path\":\"content.0.text\"}}}");
+  LlmGhostBackend *b = llm_ghost_backend_new_from_settings (s);
+  g_assert_true (LLM_GHOST_IS_GENERIC_BACKEND (b));
+  g_object_unref (b);
+  g_object_unref (s);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -349,5 +367,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/factory/mistral",        test_factory_mistral);
   g_test_add_func ("/settings/factory/unknown",        test_factory_unknown_falls_back_to_ollama);
   g_test_add_func ("/settings/factory/missing-params", test_factory_missing_params_ok);
+  g_test_add_func ("/settings/factory/generic",        test_factory_generic);
   return g_test_run ();
 }
