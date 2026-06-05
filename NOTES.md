@@ -201,8 +201,7 @@ supports `/v1/completions` (native FIM via `suffix`) and
 `LLMGHOST_OPENAI_{BASE_URL,MODEL,API_KEY,MODE}`, optional Bearer auth.
 Built on the new shared `llmghost-http-util` (extracted from the Ollama
 backend). Reachable in the demo via `LLMGHOST_BACKEND=openai`. Covered by
-the `openai-body` and `http-util` unit suites. Still deferred: GSettings
-UI, libsecret key storage, SSE streaming, Mistral/Claude backends.
+the `openai-body` and `http-util` unit suites. Still deferred: libsecret key storage, SSE streaming, Claude backend.
 
 **Mistral Codestral backend landed 2026-06-04.** `LlmGhostMistralBackend`
 hits the Codestral FIM endpoint (`POST {base}/fim/completions`, native
@@ -238,20 +237,46 @@ Three families, distinguished by FIM support:
 - `LlmGhostClaudeBackend` — separate because the chat-FIM strategy
   needs prompt construction logic that would dirty the OpenAI backend.
 
-### Architectural prerequisites
-1. **Settings**: env-var-only stops scaling once the user has multiple
-   backends configured. Decision (2026-06-04): use a **human-editable JSON
-   config file** (e.g. `~/.config/llmghost/settings.json`, XDG-based, parsed
-   with json-glib, watched via `GFileMonitor` for live reload), **not
-   GSettings/dconf** — this is a gedit plugin, so users edit the config in
-   gedit itself, with no schema-compile or `dconf-editor` step. Settings
-   include: active backend, per-backend params, debounce/timeout overrides.
-   The backend constructors (`*_backend_new(base, model, key, ...)`) are what
-   the loader will call, so the backends are already forward-compatible. A
-   small Prefs entry point can later just open the JSON file in the editor.
-2. **Secret storage**: API keys via libsecret (`gnome-keyring`). NEVER
+### Settings layer (landed)
+
+Configuration is a human-editable JSON file at
+`~/.config/llmghost/settings.json` (XDG; `$XDG_CONFIG_HOME` honored), parsed
+with json-glib and watched with `GFileMonitor` — edit it in gedit and
+completions reload live, no restart. It is auto-created with a populated
+default on first run. Every string value supports `${ENV_VAR}` interpolation
+(unset → "" + a logged warning), so secrets can stay in the environment:
+`"api_key": "${OPENAI_API_KEY}"`. A malformed file falls back to built-in
+defaults without overwriting the user's file; a malformed *live edit* keeps the
+last-good config.
+
+Schema:
+
+```jsonc
+{
+  "_help": "…ignored; _-prefixed keys are pseudo-comments",
+  "backend": "ollama",          // active backend: ollama | openai | mistral
+  "debounce_ms": 80,            // optional controller debounce override
+  "backends": {
+    "ollama":  { "host": "spark-2448", "port": 11434,
+                 "model": "qwen3-coder-next:latest", "tokens": "Qwen" },
+    "openai":  { "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini",
+                 "api_key": "${OPENAI_API_KEY}", "mode": "chat" },
+    "mistral": { "base_url": "https://codestral.mistral.ai/v1",
+                 "model": "codestral-latest", "api_key": "${MISTRAL_API_KEY}" }
+  }
+}
+```
+
+Only the active backend is built (`llm_ghost_backend_new_from_settings()` in
+`lib/llmghost-backend-factory.c`); the others are inert pre-filled config you
+switch to by editing `backend`. Unknown keys are ignored, leaving room for a
+future `"generic"` stanza. The plugin's Preferences button opens this file in
+the editor.
+
+### Remaining architectural prerequisites
+1. **Secret storage**: API keys via libsecret (`gnome-keyring`). NEVER
    plaintext in config or env vars committed to scripts.
-3. **Streaming (optional)**: cloud APIs return tokens over SSE.
+2. **Streaming (optional)**: cloud APIs return tokens over SSE.
    Streaming into the overlay drops perceived latency dramatically
    (~500 ms total → ~100 ms first-token visible). Add a
    `partial-data` signal to `LlmGhostBackend`; non-streaming backends
@@ -262,11 +287,10 @@ Three families, distinguished by FIM support:
 ### Suggested order
 1. `LlmGhostOpenAIBackend` first — tests "auth + base-URL + model
    selection" mechanics on familiar territory (LM Studio locally is
-   free to iterate against).
-2. Settings dialog — because by now multi-backend selection is
-   painful via env vars alone.
+   free to iterate against). ✓ landed 2026-06-04
+2. Settings layer — JSON config + live reload + Prefs button. ✓ landed 2026-06-05
 3. `LlmGhostMistralBackend` — small variation on (1), exercises FIM-
-   over-cloud.
+   over-cloud. ✓ landed 2026-06-04
 4. `LlmGhostClaudeBackend` — the awkward chat-FIM case.
 5. Streaming as a cross-cutting concern after backends are stable.
 
