@@ -8,6 +8,7 @@ llmghost_sources = files(
   'llmghost-ollama-backend.c',
   'llmghost-mistral-backend.c',
   'llmghost-openai-backend.c',
+  'llmghost-generic-backend.c',
   'llmghost-overlay.c',
   'llmghost-settings.c',
   'llmghost-text-util.c',
