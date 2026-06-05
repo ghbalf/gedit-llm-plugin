@@ -1,0 +1,19 @@
+{
+  "_help": "Paste the \"generic\" object into your settings.json backends map and set \"backend\": \"generic\". Export GEMINI_API_KEY. Gemini takes the key in the URL query string.",
+  "backend": "generic",
+  "backends": {
+    "generic": {
+      "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}",
+      "headers": {},
+      "model": "gemini-2.0-flash",
+      "request_template": {
+        "contents": [
+          { "role": "user",
+            "parts": [ { "text": "You are a code completion engine. Continue the code at the cursor. Output only the raw completion text — no prose, no markdown, no code fences.\n<before_cursor>{{prefix}}</before_cursor>\n<after_cursor>{{suffix}}</after_cursor>" } ] }
+        ],
+        "generationConfig": { "maxOutputTokens": 64 }
+      },
+      "response_path": "candidates.0.content.parts.0.text"
+    }
+  }
+}
