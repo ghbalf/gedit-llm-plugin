@@ -141,6 +141,77 @@ interpolate_object (JsonObject *obj)
   g_list_free (members);
 }
 
+/* ---- ${secret:NAME} reference collection (for the prefs dialog) --------- */
+
+static void
+collect_refs_from_string (const char *s, GHashTable *set)
+{
+  const char *p = s;
+  while ((p = strstr (p, "${secret:")) != NULL)
+    {
+      const char *start = p + strlen ("${secret:");
+      const char *end = strchr (start, '}');
+      if (end == NULL)
+        break;
+      char *name = g_strndup (start, (gsize) (end - start));
+      if (*name != '\0' && !g_hash_table_contains (set, name))
+        g_hash_table_add (set, name);     /* set takes ownership */
+      else
+        g_free (name);
+      p = end + 1;
+    }
+}
+
+static void
+collect_refs_from_node (JsonNode *node, GHashTable *set)
+{
+  if (JSON_NODE_HOLDS_OBJECT (node))
+    {
+      JsonObject *obj = json_node_get_object (node);
+      GList *members = json_object_get_members (obj);
+      for (GList *l = members; l != NULL; l = l->next)
+        collect_refs_from_node (json_object_get_member (obj, l->data), set);
+      g_list_free (members);
+    }
+  else if (JSON_NODE_HOLDS_ARRAY (node))
+    {
+      JsonArray *arr = json_node_get_array (node);
+      guint n = json_array_get_length (arr);
+      for (guint i = 0; i < n; i++)
+        collect_refs_from_node (json_array_get_element (arr, i), set);
+    }
+  else if (JSON_NODE_HOLDS_VALUE (node) &&
+           json_node_get_value_type (node) == G_TYPE_STRING)
+    {
+      collect_refs_from_string (json_node_get_string (node), set);
+    }
+}
+
+char **
+_llm_ghost_settings_collect_secret_refs (JsonObject *root)
+{
+  GHashTable *set = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  if (root != NULL)
+    {
+      GList *members = json_object_get_members (root);
+      for (GList *l = members; l != NULL; l = l->next)
+        collect_refs_from_node (json_object_get_member (root, l->data), set);
+      g_list_free (members);
+    }
+
+  char **out = g_new0 (char *, g_hash_table_size (set) + 1);
+  GHashTableIter it;
+  gpointer key;
+  guint i = 0;
+  g_hash_table_iter_init (&it, set);
+  while (g_hash_table_iter_next (&it, &key, NULL))
+    out[i++] = g_strdup ((char *) key);
+  out[i] = NULL;
+
+  g_hash_table_destroy (set);             /* frees the owned key strings */
+  return out;
+}
+
 /* ---- parsing ----------------------------------------------------------- */
 
 /* Parse @json and interpolate every string. Returns an owned JsonObject, or

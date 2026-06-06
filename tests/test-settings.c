@@ -420,6 +420,60 @@ test_factory_generic (void)
   g_object_unref (s);
 }
 
+static JsonObject *
+raw_object (const char *json)
+{
+  JsonParser *parser = json_parser_new ();
+  g_assert_true (json_parser_load_from_data (parser, json, -1, NULL));
+  JsonObject *o = json_object_ref (json_node_get_object (json_parser_get_root (parser)));
+  g_object_unref (parser);
+  return o;
+}
+
+static gboolean
+strv_contains (char **v, const char *s)
+{
+  for (int i = 0; v[i] != NULL; i++)
+    if (g_strcmp0 (v[i], s) == 0)
+      return TRUE;
+  return FALSE;
+}
+
+static void
+test_collect_refs_basic (void)
+{
+  JsonObject *o = raw_object (
+    "{\"a\":\"${secret:one}\",\"b\":{\"c\":\"x ${secret:two} y\"},"
+     "\"d\":[\"${secret:one}\",\"${ENV_X}\"]}");
+  char **refs = _llm_ghost_settings_collect_secret_refs (o);
+  g_assert_cmpint (g_strv_length (refs), ==, 2);     /* one, two — deduped */
+  g_assert_true (strv_contains (refs, "one"));
+  g_assert_true (strv_contains (refs, "two"));
+  g_assert_false (strv_contains (refs, "ENV_X"));     /* env vars are not secrets */
+  g_strfreev (refs);
+  json_object_unref (o);
+}
+
+static void
+test_collect_refs_none (void)
+{
+  JsonObject *o = raw_object ("{\"a\":\"plain\",\"b\":\"${ENV_ONLY}\"}");
+  char **refs = _llm_ghost_settings_collect_secret_refs (o);
+  g_assert_cmpint (g_strv_length (refs), ==, 0);
+  g_assert_null (refs[0]);
+  g_strfreev (refs);
+  json_object_unref (o);
+}
+
+static void
+test_collect_refs_null (void)
+{
+  char **refs = _llm_ghost_settings_collect_secret_refs (NULL);
+  g_assert_nonnull (refs);
+  g_assert_null (refs[0]);
+  g_strfreev (refs);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -452,5 +506,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/factory/unknown",        test_factory_unknown_falls_back_to_ollama);
   g_test_add_func ("/settings/factory/missing-params", test_factory_missing_params_ok);
   g_test_add_func ("/settings/factory/generic",        test_factory_generic);
+  g_test_add_func ("/settings/secret-refs/basic", test_collect_refs_basic);
+  g_test_add_func ("/settings/secret-refs/none",  test_collect_refs_none);
+  g_test_add_func ("/settings/secret-refs/null",  test_collect_refs_null);
   return g_test_run ();
 }

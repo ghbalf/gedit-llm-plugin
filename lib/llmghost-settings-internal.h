@@ -34,4 +34,10 @@ void _llm_ghost_settings_reload (LlmGhostSettings *self);
 typedef char *(*LlmGhostSecretLookupFn) (const char *name);
 void _llm_ghost_settings_set_secret_lookup_for_testing (LlmGhostSecretLookupFn fn);
 
+/* Collect distinct ${secret:NAME} names referenced in any string value of
+ * @root (recursing objects + arrays). Returns a newly-allocated,
+ * NULL-terminated, de-duplicated array (g_strfreev). Never NULL (may be empty).
+ * @root may be NULL (→ empty). Scan the RAW parse, before interpolation. */
+char **_llm_ghost_settings_collect_secret_refs (JsonObject *root);
+
 G_END_DECLS
