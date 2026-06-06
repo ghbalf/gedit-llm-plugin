@@ -8,5 +8,6 @@
 #include "llmghost-ollama-backend.h"
 #include "llmghost-openai-backend.h"
 #include "llmghost-mistral-backend.h"
+#include "llmghost-generic-backend.h"
 #include "llmghost-overlay.h"
 #include "llmghost-settings.h"

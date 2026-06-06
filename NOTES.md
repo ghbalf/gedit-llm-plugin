@@ -201,7 +201,10 @@ supports `/v1/completions` (native FIM via `suffix`) and
 `LLMGHOST_OPENAI_{BASE_URL,MODEL,API_KEY,MODE}`, optional Bearer auth.
 Built on the new shared `llmghost-http-util` (extracted from the Ollama
 backend). Reachable in the demo via `LLMGHOST_BACKEND=openai`. Covered by
-the `openai-body` and `http-util` unit suites. Still deferred: libsecret key storage, SSE streaming, Claude backend.
+the `openai-body` and `http-util` unit suites. Still deferred: libsecret key
+storage, SSE streaming. (Claude/Gemini are now reachable via the generic
+template backend — see "Generic (template) backend" below — so no hand-written
+Claude backend is planned.)
 
 **Mistral Codestral backend landed 2026-06-04.** `LlmGhostMistralBackend`
 hits the Codestral FIM endpoint (`POST {base}/fim/completions`, native
@@ -254,7 +257,7 @@ Schema:
 ```jsonc
 {
   "_help": "…ignored; _-prefixed keys are pseudo-comments",
-  "backend": "ollama",          // active backend: ollama | openai | mistral
+  "backend": "ollama",          // active backend: ollama | openai | mistral | generic
   "debounce_ms": 80,            // optional controller debounce override
   "backends": {
     "ollama":  { "host": "spark-2448", "port": 11434,
@@ -269,9 +272,30 @@ Schema:
 
 Only the active backend is built (`llm_ghost_backend_new_from_settings()` in
 `lib/llmghost-backend-factory.c`); the others are inert pre-filled config you
-switch to by editing `backend`. Unknown keys are ignored, leaving room for a
-future `"generic"` stanza. The plugin's Preferences button opens this file in
-the editor.
+switch to by editing `backend`. Unknown keys are ignored; the `"generic"`
+stanza (below) is built on this forward-compat slack. The plugin's Preferences
+button opens this file in the editor.
+
+### Generic (template) backend (landed)
+
+For **non-OpenAI-shaped** APIs (Anthropic native, Gemini native, …), set
+`"backend": "generic"` and a `backends.generic` stanza with `url`, a `headers`
+map, a `model`, a `request_template` (the JSON body with `{{prefix}}`,
+`{{suffix}}`, `{{model}}` placeholders), and a dotted `response_path`
+(`content.0.text`, `candidates.0.content.parts.0.text`, …). Placeholders are
+substituted **structurally** (the template is parsed, the placeholders replaced
+inside string values, then re-serialized), so quotes/newlines/backslashes in the
+code context are escaped automatically. `${ENV}` interpolation (settings) and
+`{{…}}` (per request) are separate phases, so secrets stay in the environment;
+an API key that goes in the URL query string (Gemini) is just
+`"url": "…?key=${GEMINI_API_KEY}"`. The response is run through the same
+single-line/fence-strip cleanup as the OpenAI chat mode. Ready-to-paste
+templates live in `examples/anthropic.json` and `examples/gemini.json`.
+
+This does not replace the OpenAI-compat backend, which remains the better path
+for OpenAI-*shaped* providers (native FIM via `suffix`, simpler config). The
+generic backend's unique value is the non-OpenAI shapes; with it, hand-written
+Claude/Gemini backends are no longer needed.
 
 ### Remaining architectural prerequisites
 1. **Secret storage**: API keys via libsecret (`gnome-keyring`). NEVER

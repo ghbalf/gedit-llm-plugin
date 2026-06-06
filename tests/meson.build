@@ -79,6 +79,22 @@ test_settings = executable(
 )
 test('settings', test_settings, suite: 'unit')
 
+test_text_util = executable(
+  'test-text-util',
+  'test-text-util.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('text-util', test_text_util, suite: 'unit')
+
+test_generic_body = executable(
+  'test-generic-body',
+  'test-generic-body.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('generic-body', test_generic_body, suite: 'unit')
+
 if xvfb_run.found()
   test_controller = executable(
     'test-controller',

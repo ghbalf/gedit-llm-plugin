@@ -21,13 +21,9 @@ char *_llm_ghost_openai_build_chat_body        (const char *model,
                                                 guint       max_tokens,
                                                 double      temperature);
 
-/* Trim, unwrap a single ``` fence, then truncate at the first newline.
- * NULL-safe; always returns a newly-allocated string (possibly ""). */
-char *_llm_ghost_openai_clean_chat_completion  (const char *raw);
-
 /* Pull the completion text from a parsed response @root. For CHAT, cleans
- * via the above. Returns "" for no/empty choices; NULL + @error when the
- * body carries an API error object. */
+ * via _llm_ghost_clean_single_line. Returns "" for no/empty choices; NULL +
+ * @error when the body carries an API error object. */
 char *_llm_ghost_openai_extract_completion     (JsonNode           *root,
                                                 LlmGhostOpenAIMode  mode,
                                                 GError            **error);

@@ -1,0 +1,23 @@
+{
+  "_help": "Paste the \"generic\" object into your settings.json backends map and set \"backend\": \"generic\". Export ANTHROPIC_API_KEY.",
+  "backend": "generic",
+  "backends": {
+    "generic": {
+      "url": "https://api.anthropic.com/v1/messages",
+      "headers": {
+        "x-api-key": "${ANTHROPIC_API_KEY}",
+        "anthropic-version": "2023-06-01"
+      },
+      "model": "claude-3-5-haiku-20241022",
+      "request_template": {
+        "model": "{{model}}",
+        "max_tokens": 64,
+        "messages": [
+          { "role": "user",
+            "content": "You are a code completion engine. Continue the code at the cursor. Output only the raw completion text — no prose, no markdown, no code fences.\n<before_cursor>{{prefix}}</before_cursor>\n<after_cursor>{{suffix}}</after_cursor>" }
+        ]
+      },
+      "response_path": "content.0.text"
+    }
+  }
+}

@@ -5,6 +5,7 @@
 #include "llmghost-ollama-backend.h"
 #include "llmghost-openai-backend.h"
 #include "llmghost-mistral-backend.h"
+#include "llmghost-generic-backend.h"
 
 #include <json-glib/json-glib.h>
 
@@ -81,6 +82,25 @@ build_mistral (JsonObject *p)
                                         param_string (p, "api_key"));
 }
 
+static JsonObject *
+param_object (JsonObject *p, const char *key)
+{
+  if (p == NULL || !json_object_has_member (p, key))
+    return NULL;
+  JsonNode *n = json_object_get_member (p, key);
+  return JSON_NODE_HOLDS_OBJECT (n) ? json_node_get_object (n) : NULL;
+}
+
+static LlmGhostBackend *
+build_generic (JsonObject *p)
+{
+  return llm_ghost_generic_backend_new (param_string (p, "url"),
+                                        param_object (p, "headers"),
+                                        param_string (p, "model"),
+                                        param_object (p, "request_template"),
+                                        param_string (p, "response_path"));
+}
+
 LlmGhostBackend *
 llm_ghost_backend_new_from_settings (LlmGhostSettings *settings)
 {
@@ -91,6 +111,8 @@ llm_ghost_backend_new_from_settings (LlmGhostSettings *settings)
     return build_openai (p);
   if (g_strcmp0 (which, "mistral") == 0)
     return build_mistral (p);
+  if (g_strcmp0 (which, "generic") == 0)
+    return build_generic (p);
   if (g_strcmp0 (which, "ollama") != 0)
     g_warning ("unknown backend \"%s\"; using ollama", which);
   return build_ollama (p);

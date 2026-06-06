@@ -8,6 +8,7 @@
 #include "llmghost-ollama-backend.h"
 #include "llmghost-openai-backend.h"
 #include "llmghost-mistral-backend.h"
+#include "llmghost-generic-backend.h"
 
 static void
 test_interpolate_null (void)
@@ -131,6 +132,26 @@ test_parse_backend_params_interpolated (void)
   g_assert_cmpstr (json_object_get_string_member (p, "api_key"), ==, "sk-xyz");
   g_object_unref (s);
   g_unsetenv ("LLMGHOST_TEST_KEY");
+}
+
+static void
+test_parse_interpolates_inside_arrays (void)
+{
+  /* ${ENV} inside a string nested in an array (the generic backend's
+   * request_template shape) must be interpolated, not passed through
+   * verbatim. Regression: interpolate_object used to skip arrays. */
+  g_setenv ("LLMGHOST_TEST_VAR", "VALUE", TRUE);
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backends\":{\"generic\":{\"request_template\":"
+      "{\"messages\":[{\"content\":\"a-${LLMGHOST_TEST_VAR}-b\"}]}}}}");
+  JsonObject *p = llm_ghost_settings_get_backend_params (s, "generic");
+  g_assert_nonnull (p);
+  JsonObject *tmpl = json_object_get_object_member (p, "request_template");
+  JsonArray  *msgs = json_object_get_array_member (tmpl, "messages");
+  JsonObject *m0   = json_array_get_object_element (msgs, 0);
+  g_assert_cmpstr (json_object_get_string_member (m0, "content"), ==, "a-VALUE-b");
+  g_object_unref (s);
+  g_unsetenv ("LLMGHOST_TEST_VAR");
 }
 
 static void
@@ -323,6 +344,23 @@ test_factory_missing_params_ok (void)
   g_object_unref (s);
 }
 
+static void
+test_factory_generic (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"generic\","
+    "\"backends\":{\"generic\":{"
+      "\"url\":\"http://x/v1\","
+      "\"headers\":{\"x-api-key\":\"k\"},"
+      "\"model\":\"m\","
+      "\"request_template\":{\"messages\":[{\"content\":\"{{prefix}}\"}]},"
+      "\"response_path\":\"content.0.text\"}}}");
+  LlmGhostBackend *b = llm_ghost_backend_new_from_settings (s);
+  g_assert_true (LLM_GHOST_IS_GENERIC_BACKEND (b));
+  g_object_unref (b);
+  g_object_unref (s);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -339,6 +377,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/parse/debounce",               test_parse_debounce);
   g_test_add_func ("/settings/parse/debounce-absent",        test_parse_debounce_absent);
   g_test_add_func ("/settings/parse/params-interpolated",    test_parse_backend_params_interpolated);
+  g_test_add_func ("/settings/parse/interpolate-in-arrays",  test_parse_interpolates_inside_arrays);
   g_test_add_func ("/settings/parse/underscore-ignored",     test_parse_underscore_key_ignored);
   g_test_add_func ("/settings/parse/malformed-defaults",     test_parse_malformed_uses_defaults);
   g_test_add_func ("/settings/file/autowrite-default",   test_autowrite_default);
@@ -349,5 +388,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/factory/mistral",        test_factory_mistral);
   g_test_add_func ("/settings/factory/unknown",        test_factory_unknown_falls_back_to_ollama);
   g_test_add_func ("/settings/factory/missing-params", test_factory_missing_params_ok);
+  g_test_add_func ("/settings/factory/generic",        test_factory_generic);
   return g_test_run ();
 }
