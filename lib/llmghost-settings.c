@@ -2,6 +2,7 @@
 
 #include "llmghost-settings.h"
 #include "llmghost-settings-internal.h"
+#include "llmghost-secret-store.h"
 
 #include <string.h>
 #include <gio/gio.h>
@@ -38,6 +39,20 @@ G_DEFINE_TYPE (LlmGhostSettings, llm_ghost_settings, G_TYPE_OBJECT)
 
 /* ---- ${ENV} interpolation ---------------------------------------------- */
 
+static char *
+default_secret_lookup (const char *name)
+{
+  return llm_ghost_secret_lookup (name, NULL);   /* NULL on any failure */
+}
+
+static LlmGhostSecretLookupFn secret_lookup_fn = default_secret_lookup;
+
+void
+_llm_ghost_settings_set_secret_lookup_for_testing (LlmGhostSecretLookupFn fn)
+{
+  secret_lookup_fn = fn != NULL ? fn : default_secret_lookup;
+}
+
 char *
 _llm_ghost_settings_interpolate (const char *in)
 {
@@ -54,13 +69,25 @@ _llm_ghost_settings_interpolate (const char *in)
           if (end != NULL)
             {
               char *name = g_strndup (p + 2, (gsize) (end - (p + 2)));
-              const char *val = g_getenv (name);
-              if (val == NULL)
+              if (g_str_has_prefix (name, "secret:"))
                 {
-                  g_warning ("environment variable ${%s} is not set; using \"\"", name);
-                  val = "";
+                  const char *sname = name + strlen ("secret:");
+                  char *val = secret_lookup_fn (sname);
+                  if (val == NULL)
+                    g_warning ("secret ${secret:%s} is not available; using \"\"", sname);
+                  g_string_append (out, val != NULL ? val : "");
+                  g_free (val);
                 }
-              g_string_append (out, val);
+              else
+                {
+                  const char *envv = g_getenv (name);
+                  if (envv == NULL)
+                    {
+                      g_warning ("environment variable ${%s} is not set; using \"\"", name);
+                      envv = "";
+                    }
+                  g_string_append (out, envv);
+                }
               g_free (name);
               p = end + 1;
               continue;
