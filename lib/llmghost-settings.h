@@ -39,4 +39,10 @@ gboolean llm_ghost_settings_get_debounce_ms (LlmGhostSettings *self,
 JsonObject *llm_ghost_settings_get_backend_params (LlmGhostSettings *self,
                                                    const char       *name);
 
+/* Rewrite the file at @path with its current contents, to trigger any
+ * GFileMonitor watching it (a CHANGES_DONE_HINT) so a keyring change that did
+ * not modify the file still causes a live reload + re-interpolation. Content is
+ * preserved. Returns FALSE + @error if the file cannot be read or written. */
+gboolean llm_ghost_settings_touch (const char *path, GError **error);
+
 G_END_DECLS

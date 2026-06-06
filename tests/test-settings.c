@@ -71,6 +71,65 @@ test_interpolate_literal_dollar (void)
   g_free (b);
 }
 
+static char *
+fake_secret_lookup (const char *name)
+{
+  if (g_strcmp0 (name, "openai") == 0)
+    return g_strdup ("sk-from-keyring");
+  return NULL;                              /* unknown → unavailable */
+}
+
+static void
+test_interpolate_secret_found (void)
+{
+  _llm_ghost_settings_set_secret_lookup_for_testing (fake_secret_lookup);
+  char *r = _llm_ghost_settings_interpolate ("Bearer ${secret:openai}!");
+  g_assert_cmpstr (r, ==, "Bearer sk-from-keyring!");
+  g_free (r);
+  _llm_ghost_settings_set_secret_lookup_for_testing (NULL);
+}
+
+static void
+test_interpolate_secret_missing (void)
+{
+  _llm_ghost_settings_set_secret_lookup_for_testing (fake_secret_lookup);
+  g_test_expect_message ("llmghost-settings", G_LOG_LEVEL_WARNING, "*not available*");
+  char *r = _llm_ghost_settings_interpolate ("k=${secret:nope};");
+  g_test_assert_expected_messages ();
+  g_assert_cmpstr (r, ==, "k=;");
+  g_free (r);
+  _llm_ghost_settings_set_secret_lookup_for_testing (NULL);
+}
+
+static void
+test_interpolate_secret_and_env_coexist (void)
+{
+  g_setenv ("LLMGHOST_TEST_E", "ENV", TRUE);
+  _llm_ghost_settings_set_secret_lookup_for_testing (fake_secret_lookup);
+  char *r = _llm_ghost_settings_interpolate ("${secret:openai}/${LLMGHOST_TEST_E}");
+  g_assert_cmpstr (r, ==, "sk-from-keyring/ENV");
+  g_free (r);
+  _llm_ghost_settings_set_secret_lookup_for_testing (NULL);
+  g_unsetenv ("LLMGHOST_TEST_E");
+}
+
+static void
+test_interpolate_secret_in_array (void)
+{
+  /* ${secret:} nested inside a backends params array+object (generic shape). */
+  _llm_ghost_settings_set_secret_lookup_for_testing (fake_secret_lookup);
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
+    "{\"backends\":{\"generic\":{\"request_template\":"
+      "{\"messages\":[{\"content\":\"${secret:openai}\"}]}}}}");
+  JsonObject *p = llm_ghost_settings_get_backend_params (s, "generic");
+  JsonObject *t = json_object_get_object_member (p, "request_template");
+  JsonArray  *m = json_object_get_array_member (t, "messages");
+  JsonObject *m0 = json_array_get_object_element (m, 0);
+  g_assert_cmpstr (json_object_get_string_member (m0, "content"), ==, "sk-from-keyring");
+  g_object_unref (s);
+  _llm_ghost_settings_set_secret_lookup_for_testing (NULL);
+}
+
 static void
 test_parse_active_backend (void)
 {
@@ -361,6 +420,86 @@ test_factory_generic (void)
   g_object_unref (s);
 }
 
+static JsonObject *
+raw_object (const char *json)
+{
+  JsonParser *parser = json_parser_new ();
+  g_assert_true (json_parser_load_from_data (parser, json, -1, NULL));
+  JsonObject *o = json_object_ref (json_node_get_object (json_parser_get_root (parser)));
+  g_object_unref (parser);
+  return o;
+}
+
+static gboolean
+strv_contains (char **v, const char *s)
+{
+  for (int i = 0; v[i] != NULL; i++)
+    if (g_strcmp0 (v[i], s) == 0)
+      return TRUE;
+  return FALSE;
+}
+
+static void
+test_collect_refs_basic (void)
+{
+  JsonObject *o = raw_object (
+    "{\"a\":\"${secret:one}\",\"b\":{\"c\":\"x ${secret:two} y\"},"
+     "\"d\":[\"${secret:one}\",\"${ENV_X}\"]}");
+  char **refs = _llm_ghost_settings_collect_secret_refs (o);
+  g_assert_cmpint (g_strv_length (refs), ==, 2);     /* one, two — deduped */
+  g_assert_true (strv_contains (refs, "one"));
+  g_assert_true (strv_contains (refs, "two"));
+  g_assert_false (strv_contains (refs, "ENV_X"));     /* env vars are not secrets */
+  g_strfreev (refs);
+  json_object_unref (o);
+}
+
+static void
+test_collect_refs_none (void)
+{
+  JsonObject *o = raw_object ("{\"a\":\"plain\",\"b\":\"${ENV_ONLY}\"}");
+  char **refs = _llm_ghost_settings_collect_secret_refs (o);
+  g_assert_cmpint (g_strv_length (refs), ==, 0);
+  g_assert_null (refs[0]);
+  g_strfreev (refs);
+  json_object_unref (o);
+}
+
+static void
+test_collect_refs_null (void)
+{
+  char **refs = _llm_ghost_settings_collect_secret_refs (NULL);
+  g_assert_nonnull (refs);
+  g_assert_null (refs[0]);
+  g_strfreev (refs);
+}
+
+static void
+test_touch_preserves_content (void)
+{
+  char *path = write_temp_settings ("{\"backend\":\"openai\"}");
+  GError *error = NULL;
+  g_assert_true (llm_ghost_settings_touch (path, &error));
+  g_assert_no_error (error);
+
+  char *data = NULL;
+  g_assert_true (g_file_get_contents (path, &data, NULL, &error));
+  g_assert_no_error (error);
+  g_assert_cmpstr (data, ==, "{\"backend\":\"openai\"}");
+
+  g_free (data);
+  g_free (path);
+}
+
+static void
+test_touch_missing_file_errors (void)
+{
+  GError *error = NULL;
+  g_assert_false (llm_ghost_settings_touch ("/nonexistent/llmghost/x.json", &error));
+  g_assert_nonnull (error);
+  g_clear_error (&error);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -371,6 +510,10 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/interpolate/multiple",       test_interpolate_multiple);
   g_test_add_func ("/settings/interpolate/unset",          test_interpolate_unset);
   g_test_add_func ("/settings/interpolate/literal-dollar", test_interpolate_literal_dollar);
+  g_test_add_func ("/settings/interpolate/secret-found",   test_interpolate_secret_found);
+  g_test_add_func ("/settings/interpolate/secret-missing", test_interpolate_secret_missing);
+  g_test_add_func ("/settings/interpolate/secret-env",     test_interpolate_secret_and_env_coexist);
+  g_test_add_func ("/settings/interpolate/secret-array",   test_interpolate_secret_in_array);
   g_test_add_func ("/settings/parse/active-backend",         test_parse_active_backend);
   g_test_add_func ("/settings/parse/active-backend-default", test_parse_active_backend_default);
   g_test_add_func ("/settings/parse/unknown-passthrough",    test_parse_unknown_backend_passthrough);
@@ -389,5 +532,10 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/factory/unknown",        test_factory_unknown_falls_back_to_ollama);
   g_test_add_func ("/settings/factory/missing-params", test_factory_missing_params_ok);
   g_test_add_func ("/settings/factory/generic",        test_factory_generic);
+  g_test_add_func ("/settings/secret-refs/basic", test_collect_refs_basic);
+  g_test_add_func ("/settings/secret-refs/none",  test_collect_refs_none);
+  g_test_add_func ("/settings/secret-refs/null",  test_collect_refs_null);
+  g_test_add_func ("/settings/touch/preserves", test_touch_preserves_content);
+  g_test_add_func ("/settings/touch/missing",   test_touch_missing_file_errors);
   return g_test_run ();
 }
