@@ -72,26 +72,45 @@ _llm_ghost_settings_interpolate (const char *in)
   return g_string_free (out, FALSE);
 }
 
-/* Replace every string value in @obj (recursing into nested objects) with its
- * interpolation. Our config has no string arrays, so arrays are left alone. */
+/* Replace every string value reachable from @node with its interpolation,
+ * recursing through objects AND arrays (the generic backend's request_template
+ * nests strings inside arrays). Strings are mutated in place via
+ * json_node_set_string, which works uniformly for object members and array
+ * elements (json-glib has no array-element string setter) — mirroring the
+ * request-time substitute_node in the generic backend. */
+static void
+interpolate_node (JsonNode *node)
+{
+  if (JSON_NODE_HOLDS_OBJECT (node))
+    {
+      JsonObject *obj = json_node_get_object (node);
+      GList *members = json_object_get_members (obj);   /* snapshot of keys */
+      for (GList *l = members; l != NULL; l = l->next)
+        interpolate_node (json_object_get_member (obj, l->data));
+      g_list_free (members);
+    }
+  else if (JSON_NODE_HOLDS_ARRAY (node))
+    {
+      JsonArray *arr = json_node_get_array (node);
+      guint n = json_array_get_length (arr);
+      for (guint i = 0; i < n; i++)
+        interpolate_node (json_array_get_element (arr, i));
+    }
+  else if (JSON_NODE_HOLDS_VALUE (node) &&
+           json_node_get_value_type (node) == G_TYPE_STRING)
+    {
+      char *interp = _llm_ghost_settings_interpolate (json_node_get_string (node));
+      json_node_set_string (node, interp);
+      g_free (interp);
+    }
+}
+
 static void
 interpolate_object (JsonObject *obj)
 {
   GList *members = json_object_get_members (obj);   /* snapshot of keys */
   for (GList *l = members; l != NULL; l = l->next)
-    {
-      const char *key = l->data;
-      JsonNode *child = json_object_get_member (obj, key);
-      if (JSON_NODE_HOLDS_OBJECT (child))
-        interpolate_object (json_node_get_object (child));
-      else if (JSON_NODE_HOLDS_VALUE (child) &&
-               json_node_get_value_type (child) == G_TYPE_STRING)
-        {
-          char *interp = _llm_ghost_settings_interpolate (json_node_get_string (child));
-          json_object_set_string_member (obj, key, interp);
-          g_free (interp);
-        }
-    }
+    interpolate_node (json_object_get_member (obj, l->data));
   g_list_free (members);
 }
 
