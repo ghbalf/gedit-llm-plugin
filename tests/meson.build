@@ -95,6 +95,14 @@ test_generic_body = executable(
 )
 test('generic-body', test_generic_body, suite: 'unit')
 
+test_secret_store = executable(
+  'test-secret-store',
+  'test-secret-store.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('secret-store', test_secret_store, suite: 'unit')
+
 if xvfb_run.found()
   test_controller = executable(
     'test-controller',

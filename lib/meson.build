@@ -1,5 +1,6 @@
 llmghost_sources = files(
   'llmghost-backend.c',
+  'llmghost-secret-store.c',
   'llmghost-backend-factory.c',
   'llmghost-controller.c',
   'llmghost-fake-backend.c',
@@ -30,7 +31,7 @@ llmghost_headers = files(
 )
 
 llmghost_deps = [
-  gtk_dep, glib_dep, gobject_dep, gio_dep, soup_dep, json_dep,
+  gtk_dep, glib_dep, gobject_dep, gio_dep, soup_dep, json_dep, secret_dep,
 ]
 
 llmghost_lib = static_library(
