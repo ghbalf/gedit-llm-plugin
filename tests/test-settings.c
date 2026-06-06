@@ -474,6 +474,32 @@ test_collect_refs_null (void)
   g_strfreev (refs);
 }
 
+static void
+test_touch_preserves_content (void)
+{
+  char *path = write_temp_settings ("{\"backend\":\"openai\"}");
+  GError *error = NULL;
+  g_assert_true (llm_ghost_settings_touch (path, &error));
+  g_assert_no_error (error);
+
+  char *data = NULL;
+  g_assert_true (g_file_get_contents (path, &data, NULL, &error));
+  g_assert_no_error (error);
+  g_assert_cmpstr (data, ==, "{\"backend\":\"openai\"}");
+
+  g_free (data);
+  g_free (path);
+}
+
+static void
+test_touch_missing_file_errors (void)
+{
+  GError *error = NULL;
+  g_assert_false (llm_ghost_settings_touch ("/nonexistent/llmghost/x.json", &error));
+  g_assert_nonnull (error);
+  g_clear_error (&error);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -509,5 +535,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/secret-refs/basic", test_collect_refs_basic);
   g_test_add_func ("/settings/secret-refs/none",  test_collect_refs_none);
   g_test_add_func ("/settings/secret-refs/null",  test_collect_refs_null);
+  g_test_add_func ("/settings/touch/preserves", test_touch_preserves_content);
+  g_test_add_func ("/settings/touch/missing",   test_touch_missing_file_errors);
   return g_test_run ();
 }

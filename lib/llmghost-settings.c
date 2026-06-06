@@ -243,6 +243,19 @@ parse_and_interpolate (const char *json)
   return obj;
 }
 
+gboolean
+llm_ghost_settings_touch (const char *path, GError **error)
+{
+  g_return_val_if_fail (path != NULL, FALSE);
+  char *data = NULL;
+  gsize len = 0;
+  if (!g_file_get_contents (path, &data, &len, error))
+    return FALSE;
+  gboolean ok = g_file_set_contents (path, data, (gssize) len, error);
+  g_free (data);
+  return ok;
+}
+
 /* Built-in defaults; always valid by construction. */
 static JsonObject *
 default_object (void)
