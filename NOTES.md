@@ -297,9 +297,25 @@ for OpenAI-*shaped* providers (native FIM via `suffix`, simpler config). The
 generic backend's unique value is the non-OpenAI shapes; with it, hand-written
 Claude/Gemini backends are no longer needed.
 
+### Secret storage (libsecret) (landed)
+
+API keys can live in the system keyring (gnome-keyring) instead of plaintext
+config or env vars. Reference a stored key from any string value with
+`${secret:NAME}` — resolved at settings load-time in the same interpolation pass
+as `${ENV}` (and, like `${ENV}`, a missing/unavailable secret logs a warning and
+expands to `""`). Manage keys from the plugin's Preferences page: it lists every
+`${secret:NAME}` the active `settings.json` references and offers a masked field
+with **Store** / **Clear** per name. Storing or clearing rewrites the settings
+file to trigger the live-reload, so a new key takes effect without a restart.
+Example: `"api_key": "${secret:openai}"`, then store the value once under the
+name `openai` in Preferences (or `secret-tool store --label='llmghost: openai'
+name openai`). Backed by `lib/llmghost-secret-store.{c,h}` (a `libsecret-1`
+wrapper). Hard build dependency: `libsecret-1`.
+
 ### Remaining architectural prerequisites
-1. **Secret storage**: API keys via libsecret (`gnome-keyring`). NEVER
-   plaintext in config or env vars committed to scripts.
+1. **Secret storage**: API keys via libsecret (`gnome-keyring`). ✓ landed
+   2026-06-06 — `${secret:NAME}` config refs + a Preferences manager. Plaintext
+   in config / env vars still works but is no longer required.
 2. **Streaming (optional)**: cloud APIs return tokens over SSE.
    Streaming into the overlay drops perceived latency dramatically
    (~500 ms total → ~100 ms first-token visible). Add a
