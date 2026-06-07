@@ -5,6 +5,7 @@
 #include <string.h>
 #include "llmghost-http-util.h"
 #include "llmghost-text-util.h"
+#include "llmghost-backend-internal.h"
 
 #define CHAT_SYSTEM_PROMPT \
   "You are a code completion engine. Output only the code that belongs " \
@@ -40,7 +41,8 @@ _llm_ghost_openai_build_completions_body (const char *model,
                                           const char *prefix,
                                           const char *suffix,
                                           guint       max_tokens,
-                                          double      temperature)
+                                          double      temperature,
+                                          gboolean    stream)
 {
   JsonBuilder *b = json_builder_new ();
   json_builder_begin_object (b);
@@ -57,7 +59,7 @@ _llm_ghost_openai_build_completions_body (const char *model,
   json_builder_add_double_value (b, temperature);
   add_stop_newline (b);
   json_builder_set_member_name (b, "stream");
-  json_builder_add_boolean_value (b, FALSE);
+  json_builder_add_boolean_value (b, stream);
 
   json_builder_end_object (b);
   return finish_builder (b);
@@ -79,7 +81,8 @@ _llm_ghost_openai_build_chat_body (const char *model,
                                    const char *prefix,
                                    const char *suffix,
                                    guint       max_tokens,
-                                   double      temperature)
+                                   double      temperature,
+                                   gboolean    stream)
 {
   char *user = g_strdup_printf ("<PREFIX>%s</PREFIX>\n<SUFFIX>%s</SUFFIX>",
                                 prefix ? prefix : "", suffix ? suffix : "");
@@ -102,7 +105,7 @@ _llm_ghost_openai_build_chat_body (const char *model,
   json_builder_add_double_value (b, temperature);
   add_stop_newline (b);
   json_builder_set_member_name (b, "stream");
-  json_builder_add_boolean_value (b, FALSE);
+  json_builder_add_boolean_value (b, stream);
 
   json_builder_end_object (b);
   g_free (user);
@@ -171,6 +174,77 @@ _llm_ghost_openai_extract_completion (JsonNode           *root,
   return _llm_ghost_clean_single_line (content);
 }
 
+char *
+_llm_ghost_openai_extract_delta (JsonNode           *event,
+                                 LlmGhostOpenAIMode  mode,
+                                 GError            **error)
+{
+  if (event == NULL || !JSON_NODE_HOLDS_OBJECT (event))
+    return g_strdup ("");
+
+  JsonObject *obj = json_node_get_object (event);
+
+  if (json_object_has_member (obj, "error"))
+    {
+      JsonNode   *en  = json_object_get_member (obj, "error");
+      const char *msg = NULL;
+      if (JSON_NODE_HOLDS_OBJECT (en))
+        {
+          JsonObject *eo = json_node_get_object (en);
+          if (json_object_has_member (eo, "message"))
+            msg = json_object_get_string_member (eo, "message");
+        }
+      else if (JSON_NODE_HOLDS_VALUE (en))
+        msg = json_node_get_string (en);
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "openai: %s", msg ? msg : "(error)");
+      return NULL;
+    }
+
+  if (!json_object_has_member (obj, "choices"))
+    return g_strdup ("");
+  JsonNode *cn = json_object_get_member (obj, "choices");
+  if (!JSON_NODE_HOLDS_ARRAY (cn))
+    return g_strdup ("");
+  JsonArray *choices = json_node_get_array (cn);
+  if (json_array_get_length (choices) == 0)
+    return g_strdup ("");
+  JsonNode *ce = json_array_get_element (choices, 0);
+  if (!JSON_NODE_HOLDS_OBJECT (ce))
+    return g_strdup ("");
+  JsonObject *choice = json_node_get_object (ce);
+
+  if (mode == LLM_GHOST_OPENAI_MODE_COMPLETIONS)
+    {
+      if (json_object_has_member (choice, "text"))
+        {
+          JsonNode *tn = json_object_get_member (choice, "text");
+          if (JSON_NODE_HOLDS_VALUE (tn) &&
+              json_node_get_value_type (tn) == G_TYPE_STRING)
+            return g_strdup (json_node_get_string (tn));
+        }
+      return g_strdup ("");
+    }
+
+  /* chat: choices[0].delta.content */
+  if (json_object_has_member (choice, "delta"))
+    {
+      JsonNode *dn = json_object_get_member (choice, "delta");
+      if (JSON_NODE_HOLDS_OBJECT (dn))
+        {
+          JsonObject *d = json_node_get_object (dn);
+          if (json_object_has_member (d, "content"))
+            {
+              JsonNode *cont = json_object_get_member (d, "content");
+              if (JSON_NODE_HOLDS_VALUE (cont) &&
+                  json_node_get_value_type (cont) == G_TYPE_STRING)
+                return g_strdup (json_node_get_string (cont));
+            }
+        }
+    }
+  return g_strdup ("");
+}
+
 /* ---- type --------------------------------------------------------------- */
 
 #define DEFAULT_BASE_URL     "https://api.openai.com/v1"
@@ -187,6 +261,7 @@ struct _LlmGhostOpenAIBackend
   char               *model;
   char               *api_key;     /* NULL = no auth */
   LlmGhostOpenAIMode  mode;
+  gboolean            stream;
   guint               max_tokens;
   double              temperature;
 };
@@ -238,6 +313,81 @@ on_http_done (GObject *source, GAsyncResult *result, gpointer user_data)
   g_object_unref (task);
 }
 
+typedef struct {
+  LlmGhostOpenAIBackend *self;   /* borrowed; outer task holds a ref */
+  LlmGhostOpenAIMode     mode;
+  GString               *acc;
+  GError                *evt_error;
+} OpenAIStreamCtx;
+
+static void
+openai_stream_ctx_free (gpointer data)
+{
+  OpenAIStreamCtx *c = data;
+  g_string_free (c->acc, TRUE);
+  g_clear_error (&c->evt_error);
+  g_free (c);
+}
+
+static void
+openai_on_event (const char *payload, gpointer user_data)
+{
+  OpenAIStreamCtx *ctx = user_data;
+  if (ctx->evt_error != NULL)
+    return;
+  if (g_strcmp0 (payload, "[DONE]") == 0)
+    return;
+
+  JsonNode *node = _llm_ghost_http_parse_json (payload);
+  if (node == NULL)
+    return;   /* skip a malformed/empty line, keep streaming */
+
+  GError *e = NULL;
+  char *delta = _llm_ghost_openai_extract_delta (node, ctx->mode, &e);
+  json_node_unref (node);
+  if (delta == NULL)
+    {
+      ctx->evt_error = e;
+      return;
+    }
+  if (*delta != '\0')
+    {
+      g_string_append (ctx->acc, delta);
+      char *clean = _llm_ghost_clean_single_line (ctx->acc->str);
+      _llm_ghost_backend_emit_partial_data (LLM_GHOST_BACKEND (ctx->self), clean);
+      g_free (clean);
+    }
+  g_free (delta);
+}
+
+static void
+openai_on_stream_done (GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  (void) source;
+  GTask *outer = user_data;
+  OpenAIStreamCtx *ctx = g_task_get_task_data (outer);
+  GError *error = NULL;
+
+  if (!_llm_ghost_http_post_json_stream_finish (result, &error))
+    {
+      g_task_return_error (outer, error);
+      g_object_unref (outer);
+      return;
+    }
+  if (ctx->evt_error != NULL)
+    {
+      g_task_return_error (outer, g_steal_pointer (&ctx->evt_error));
+      g_object_unref (outer);
+      return;
+    }
+
+  char *out = (ctx->mode == LLM_GHOST_OPENAI_MODE_CHAT)
+                ? _llm_ghost_clean_single_line (ctx->acc->str)
+                : g_strdup (ctx->acc->str);
+  g_task_return_pointer (outer, out, g_free);
+  g_object_unref (outer);
+}
+
 static void
 openai_request (LlmGhostBackend     *backend,
                 const char          *prefix,
@@ -247,17 +397,50 @@ openai_request (LlmGhostBackend     *backend,
                 gpointer             user_data)
 {
   LlmGhostOpenAIBackend *self = LLM_GHOST_OPENAI_BACKEND (backend);
+  gboolean comp = (self->mode == LLM_GHOST_OPENAI_MODE_COMPLETIONS);
+  char *url = join_url (self->base_url, comp ? "completions" : "chat/completions");
+
+  if (self->stream)
+    {
+      GTask *task = g_task_new (self, cancellable, callback, user_data);
+      OpenAIStreamCtx *ctx = g_new0 (OpenAIStreamCtx, 1);
+      ctx->self = self;
+      ctx->mode = self->mode;
+      ctx->acc  = g_string_new (NULL);
+      g_task_set_task_data (task, ctx, openai_stream_ctx_free);
+
+      char *body = comp
+        ? _llm_ghost_openai_build_completions_body (self->model, prefix, suffix,
+                                                    self->max_tokens, self->temperature, TRUE)
+        : _llm_ghost_openai_build_chat_body (self->model, prefix, suffix,
+                                             self->max_tokens, self->temperature, TRUE);
+
+      JsonObject *headers = NULL;
+      if (self->api_key != NULL && *self->api_key != '\0')
+        {
+          char *auth = g_strdup_printf ("Bearer %s", self->api_key);
+          headers = json_object_new ();
+          json_object_set_string_member (headers, "Authorization", auth);
+          g_free (auth);
+        }
+
+      _llm_ghost_http_post_json_stream_async (self->session, url, headers, body,
+                                              openai_on_event, ctx, cancellable,
+                                              openai_on_stream_done, task);
+      if (headers != NULL)
+        json_object_unref (headers);
+      g_free (url);
+      return;
+    }
+
+  /* Non-streaming (opt-out) path: whole-body request as before. */
   GTask *task = g_task_new (self, cancellable, callback, user_data);
   g_task_set_task_data (task, GINT_TO_POINTER (self->mode), NULL);
-
-  gboolean comp = (self->mode == LLM_GHOST_OPENAI_MODE_COMPLETIONS);
-  char *url  = join_url (self->base_url, comp ? "completions" : "chat/completions");
   char *body = comp
     ? _llm_ghost_openai_build_completions_body (self->model, prefix, suffix,
-                                                self->max_tokens, self->temperature)
+                                                self->max_tokens, self->temperature, FALSE)
     : _llm_ghost_openai_build_chat_body (self->model, prefix, suffix,
-                                         self->max_tokens, self->temperature);
-
+                                         self->max_tokens, self->temperature, FALSE);
   _llm_ghost_http_post_json_async (self->session, url, self->api_key, body,
                                    cancellable, on_http_done, task);
   g_free (url);
@@ -304,6 +487,7 @@ llm_ghost_openai_backend_init (LlmGhostOpenAIBackend *self)
   self->max_tokens  = DEFAULT_MAX_TOKENS;
   self->temperature = DEFAULT_TEMPERATURE;
   self->mode        = LLM_GHOST_OPENAI_MODE_CHAT;
+  self->stream      = TRUE;
 }
 
 /* ---- construction ------------------------------------------------------- */
@@ -358,4 +542,11 @@ llm_ghost_openai_backend_new (const char         *base_url,
   self->mode     = resolve_mode (mode);
 
   return LLM_GHOST_BACKEND (self);
+}
+
+void
+_llm_ghost_openai_backend_set_stream (LlmGhostOpenAIBackend *self, gboolean stream)
+{
+  g_return_if_fail (LLM_GHOST_IS_OPENAI_BACKEND (self));
+  self->stream = stream;
 }

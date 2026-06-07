@@ -63,6 +63,14 @@ test_openai_body = executable(
 )
 test('openai-body', test_openai_body, suite: 'unit')
 
+test_openai_stream = executable(
+  'test-openai-stream',
+  'test-openai-stream.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('openai-stream', test_openai_stream, suite: 'unit')
+
 test_mistral_body = executable(
   'test-mistral-body',
   'test-mistral-body.c',
