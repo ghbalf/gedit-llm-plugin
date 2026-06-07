@@ -16,5 +16,6 @@ void             mock_backend_set_response   (MockBackend *self, const char *tex
 guint            mock_backend_request_count  (MockBackend *self);
 guint            mock_backend_cancel_count   (MockBackend *self);
 void             mock_backend_complete_pending (MockBackend *self);
+void             mock_backend_emit_partial    (MockBackend *self, const char *text);
 
 G_END_DECLS

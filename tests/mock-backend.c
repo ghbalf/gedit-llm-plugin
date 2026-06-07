@@ -1,4 +1,5 @@
 #include "mock-backend.h"
+#include "llmghost-backend-internal.h"
 
 typedef struct {
   GTask        *task;
@@ -138,6 +139,12 @@ mock_backend_complete_pending (MockBackend *self)
       pending_free (p);
     }
   g_list_free (snapshot);
+}
+
+void
+mock_backend_emit_partial (MockBackend *self, const char *text)
+{
+  _llm_ghost_backend_emit_partial_data (LLM_GHOST_BACKEND (self), text);
 }
 
 static void
