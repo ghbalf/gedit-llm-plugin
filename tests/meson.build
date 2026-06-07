@@ -111,6 +111,14 @@ test_sse_parser = executable(
 )
 test('sse-parser', test_sse_parser, suite: 'unit')
 
+test_backend_signal = executable(
+  'test-backend-signal',
+  ['test-backend-signal.c', mock_backend_sources],
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('backend-signal', test_backend_signal, suite: 'unit')
+
 if xvfb_run.found()
   test_controller = executable(
     'test-controller',
