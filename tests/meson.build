@@ -103,6 +103,14 @@ test_generic_body = executable(
 )
 test('generic-body', test_generic_body, suite: 'unit')
 
+test_generic_stream = executable(
+  'test-generic-stream',
+  'test-generic-stream.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('generic-stream', test_generic_stream, suite: 'unit')
+
 test_secret_store = executable(
   'test-secret-store',
   'test-secret-store.c',
