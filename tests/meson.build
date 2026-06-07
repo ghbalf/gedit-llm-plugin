@@ -103,6 +103,14 @@ test_secret_store = executable(
 )
 test('secret-store', test_secret_store, suite: 'unit')
 
+test_sse_parser = executable(
+  'test-sse-parser',
+  'test-sse-parser.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('sse-parser', test_sse_parser, suite: 'unit')
+
 if xvfb_run.found()
   test_controller = executable(
     'test-controller',
