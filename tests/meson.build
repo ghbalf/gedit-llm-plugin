@@ -63,6 +63,14 @@ test_openai_body = executable(
 )
 test('openai-body', test_openai_body, suite: 'unit')
 
+test_openai_stream = executable(
+  'test-openai-stream',
+  'test-openai-stream.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('openai-stream', test_openai_stream, suite: 'unit')
+
 test_mistral_body = executable(
   'test-mistral-body',
   'test-mistral-body.c',
@@ -95,6 +103,14 @@ test_generic_body = executable(
 )
 test('generic-body', test_generic_body, suite: 'unit')
 
+test_generic_stream = executable(
+  'test-generic-stream',
+  'test-generic-stream.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('generic-stream', test_generic_stream, suite: 'unit')
+
 test_secret_store = executable(
   'test-secret-store',
   'test-secret-store.c',
@@ -102,6 +118,22 @@ test_secret_store = executable(
   install: false,
 )
 test('secret-store', test_secret_store, suite: 'unit')
+
+test_sse_parser = executable(
+  'test-sse-parser',
+  'test-sse-parser.c',
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('sse-parser', test_sse_parser, suite: 'unit')
+
+test_backend_signal = executable(
+  'test-backend-signal',
+  ['test-backend-signal.c', mock_backend_sources],
+  dependencies: [llmghost_dep],
+  install: false,
+)
+test('backend-signal', test_backend_signal, suite: 'unit')
 
 if xvfb_run.found()
   test_controller = executable(

@@ -2,6 +2,7 @@
 #include <gio/gio.h>
 #include <json-glib/json-glib.h>
 #include "llmghost-generic-backend-internal.h"
+#include "llmghost-http-util.h"
 
 /* Parse a template literal into a JsonObject (caller unrefs). */
 static JsonObject *
@@ -274,6 +275,75 @@ test_extract_null_path (void)
   json_node_unref (n);
 }
 
+static void
+test_extract_delta_present (void)
+{
+  JsonNode *n = _llm_ghost_http_parse_json (
+    "{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}");
+  char *d = _llm_ghost_generic_extract_delta (n, "choices.0.delta.content");
+  g_assert_cmpstr (d, ==, "hi");
+  g_free (d);
+  json_node_unref (n);
+}
+
+static void
+test_extract_delta_missing_is_empty (void)
+{
+  JsonNode *n = _llm_ghost_http_parse_json (
+    "{\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}");
+  char *d = _llm_ghost_generic_extract_delta (n, "choices.0.delta.content");
+  g_assert_cmpstr (d, ==, "");   /* lenient: missing path -> "" */
+  g_free (d);
+  json_node_unref (n);
+}
+
+static void
+test_build_body_stream_override (void)
+{
+  JsonObject *tmpl = json_object_new ();
+  json_object_set_string_member (tmpl, "prompt", "{{prefix}}");
+
+  char *on = _llm_ghost_generic_build_body_with_stream (tmpl, "p", "s", NULL,
+                                                        "stream", TRUE);
+  g_assert_nonnull (g_strstr_len (on, -1, "\"stream\":true"));
+  g_free (on);
+
+  char *off = _llm_ghost_generic_build_body_with_stream (tmpl, "p", "s", NULL,
+                                                         "stream", FALSE);
+  g_assert_nonnull (g_strstr_len (off, -1, "\"stream\":false"));
+  g_free (off);
+
+  /* Empty stream_field leaves the template untouched (no stream member). */
+  char *none = _llm_ghost_generic_build_body_with_stream (tmpl, "p", "s", NULL,
+                                                          "", TRUE);
+  g_assert_null (g_strstr_len (none, -1, "stream"));
+  g_free (none);
+
+  json_object_unref (tmpl);
+}
+
+/* Regression: building a body must NOT mutate the stored template, so repeated
+ * requests with different prefixes each produce their own substitution. (With
+ * json-glib < 1.10, json_node_copy() shares the object, so a naive copy would
+ * leave the first request's prefix baked into the template.) */
+static void
+test_build_body_does_not_mutate_template (void)
+{
+  JsonObject *tmpl = json_object_new ();
+  json_object_set_string_member (tmpl, "prompt", "{{prefix}}");
+
+  char *first  = _llm_ghost_generic_build_body (tmpl, "AAA", "s", NULL);
+  char *second = _llm_ghost_generic_build_body (tmpl, "BBB", "s", NULL);
+
+  g_assert_nonnull (g_strstr_len (first,  -1, "AAA"));
+  g_assert_nonnull (g_strstr_len (second, -1, "BBB"));
+  g_assert_null   (g_strstr_len (second, -1, "AAA"));   /* template not mutated */
+
+  g_free (first);
+  g_free (second);
+  json_object_unref (tmpl);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -298,5 +368,9 @@ main (int argc, char *argv[])
   g_test_add_func ("/generic-body/extract-nonstring",   test_extract_non_string_leaf);
   g_test_add_func ("/generic-body/extract-null-root",   test_extract_null_root);
   g_test_add_func ("/generic-body/extract-null-path",   test_extract_null_path);
+  g_test_add_func ("/generic/extract-delta-present",  test_extract_delta_present);
+  g_test_add_func ("/generic/extract-delta-missing",  test_extract_delta_missing_is_empty);
+  g_test_add_func ("/generic/build-body-stream",      test_build_body_stream_override);
+  g_test_add_func ("/generic/build-body-no-mutate",   test_build_body_does_not_mutate_template);
   return g_test_run ();
 }

@@ -1,6 +1,7 @@
 llmghost_sources = files(
   'llmghost-backend.c',
   'llmghost-secret-store.c',
+  'llmghost-sse-parser.c',
   'llmghost-backend-factory.c',
   'llmghost-controller.c',
   'llmghost-fake-backend.c',

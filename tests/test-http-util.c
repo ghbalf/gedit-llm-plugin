@@ -54,6 +54,23 @@ server_cb (SoupServer *server, SoupServerMessage *m, const char *path,
       soup_server_message_set_response (m, "text/plain",
                                         SOUP_MEMORY_COPY, resp, strlen (resp));
     }
+  else if (g_strcmp0 (path, "/sse") == 0)
+    {
+      const char *resp =
+        "data: a\n\n"
+        "data: b\n\n"
+        "data: [DONE]\n\n";
+      soup_server_message_set_status (m, 200, NULL);
+      soup_server_message_set_response (m, "text/event-stream",
+                                        SOUP_MEMORY_COPY, resp, strlen (resp));
+    }
+  else if (g_strcmp0 (path, "/sse-bad") == 0)
+    {
+      const char *resp = "{\"error\":\"nope\"}";
+      soup_server_message_set_status (m, 500, NULL);
+      soup_server_message_set_response (m, "application/json",
+                                        SOUP_MEMORY_COPY, resp, strlen (resp));
+    }
   else /* /malformed */
     {
       const char *resp = "not json {";
@@ -252,6 +269,99 @@ test_bearer_wrapper_still_works (void)
   srv_free (s);
 }
 
+/* ---- streaming driver -------------------------------------------------- */
+
+typedef struct {
+  GMainLoop *loop;
+  GPtrArray *events;   /* char*, owned */
+  gboolean   ok;
+  GError    *error;
+} StreamWait;
+
+static void
+on_stream_event (const char *payload, gpointer user_data)
+{
+  StreamWait *w = user_data;
+  g_ptr_array_add (w->events, g_strdup (payload));
+}
+
+static void
+on_stream_done (GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  (void) source;
+  StreamWait *w = user_data;
+  w->ok = _llm_ghost_http_post_json_stream_finish (result, &w->error);
+  g_main_loop_quit (w->loop);
+}
+
+static StreamWait *
+stream_post (Srv *s, const char *path)
+{
+  SoupSession *session = soup_session_new ();
+  GMainLoop *loop = g_main_loop_new (NULL, FALSE);
+  StreamWait *w = g_new0 (StreamWait, 1);
+  w->loop = loop;
+  w->events = g_ptr_array_new_with_free_func (g_free);
+  char *url = g_strconcat (s->base, path + 1, NULL);
+
+  _llm_ghost_http_post_json_stream_async (session, url, NULL, g_strdup ("{}"),
+                                          on_stream_event, w, NULL,
+                                          on_stream_done, w);
+  g_main_loop_run (loop);
+
+  g_free (url);
+  g_main_loop_unref (loop);
+  g_object_unref (session);
+  return w;
+}
+
+static void
+stream_wait_free (StreamWait *w)
+{
+  g_ptr_array_unref (w->events);
+  g_clear_error (&w->error);
+  g_free (w);
+}
+
+static void
+test_stream_delivers_events (void)
+{
+  Srv *s = srv_new ();
+  StreamWait *w = stream_post (s, "/sse");
+  g_assert_true (w->ok);
+  g_assert_no_error (w->error);
+  g_assert_cmpuint (w->events->len, ==, 3);
+  g_assert_cmpstr (g_ptr_array_index (w->events, 0), ==, "a");
+  g_assert_cmpstr (g_ptr_array_index (w->events, 1), ==, "b");
+  g_assert_cmpstr (g_ptr_array_index (w->events, 2), ==, "[DONE]");
+  stream_wait_free (w);
+  srv_free (s);
+}
+
+static void
+test_stream_http_error (void)
+{
+  Srv *s = srv_new ();
+  StreamWait *w = stream_post (s, "/sse-bad");
+  g_assert_false (w->ok);
+  g_assert_error (w->error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  g_assert_nonnull (g_strstr_len (w->error->message, -1, "500"));
+  stream_wait_free (w);
+  srv_free (s);
+}
+
+static void
+test_parse_json_helper (void)
+{
+  JsonNode *n = _llm_ghost_http_parse_json ("{\"k\":42}");
+  g_assert_nonnull (n);
+  g_assert_cmpint (json_object_get_int_member (json_node_get_object (n), "k"), ==, 42);
+  json_node_unref (n);
+
+  g_assert_null (_llm_ghost_http_parse_json (""));
+  g_assert_null (_llm_ghost_http_parse_json ("not json {"));
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -262,5 +372,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/http-util/malformed-json",    test_malformed_json_is_error);
   g_test_add_func ("/http-util/custom-headers",  test_custom_headers);
   g_test_add_func ("/http-util/bearer-wrapper",  test_bearer_wrapper_still_works);
+  g_test_add_func ("/http-util/stream-events",   test_stream_delivers_events);
+  g_test_add_func ("/http-util/stream-http-error", test_stream_http_error);
+  g_test_add_func ("/http-util/parse-json",      test_parse_json_helper);
   return g_test_run ();
 }

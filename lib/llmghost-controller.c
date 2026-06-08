@@ -26,6 +26,7 @@ struct _LlmGhostController
   gulong               h_buffer_cursor;
   gulong               h_view_keypress;
   gulong               h_view_destroy;
+  gulong               h_backend_partial;
   gulong               h_vadj_changed;
   gulong               h_hadj_changed;
 
@@ -49,7 +50,9 @@ static void     on_view_destroy           (GtkWidget *widget, gpointer user_data
 static void     on_view_scrolled          (GtkAdjustment *adj, gpointer user_data);
 static gboolean on_debounce_fire          (gpointer user_data);
 static void     on_completion_ready       (GObject *source, GAsyncResult *result, gpointer user_data);
+static void     on_partial_data           (LlmGhostBackend *backend, const char *text, gpointer user_data);
 static void     restart_request           (LlmGhostController *self);
+static char *   sanitize_ghost_text       (char *text);
 static void     show_ghost_at_cursor      (LlmGhostController *self);
 static void     reposition_ghost          (LlmGhostController *self);
 static void     hide_ghost                (LlmGhostController *self);
@@ -78,6 +81,11 @@ llm_ghost_controller_dispose (GObject *object)
   cancel_in_flight (self);
   detach_from_view (self);
 
+  if (self->backend != NULL && self->h_backend_partial != 0)
+    {
+      g_signal_handler_disconnect (self->backend, self->h_backend_partial);
+      self->h_backend_partial = 0;
+    }
   g_clear_object (&self->backend);
   g_clear_object (&self->overlay);
 
@@ -204,6 +212,9 @@ llm_ghost_controller_new (GtkTextView     *view,
 
   LlmGhostController *self = g_object_new (LLM_GHOST_TYPE_CONTROLLER, NULL);
   self->backend = g_object_ref (backend);
+  self->h_backend_partial =
+    g_signal_connect (self->backend, LLM_GHOST_BACKEND_SIGNAL_PARTIAL_DATA,
+                      G_CALLBACK (on_partial_data), self);
   attach_to_view (self, view);
   return self;
 }
@@ -418,25 +429,9 @@ on_completion_ready (GObject *source, GAsyncResult *result, gpointer user_data)
       goto out;
     }
 
-  /* Phase 2: ghost is a single-line GtkLabel overlay. Truncate at the
-   * first newline so display and Tab-accept agree. Multi-line is phase 3. */
-  char *nl = strchr (text, '\n');
-  if (nl != NULL)
-    *nl = '\0';
-
-  /* Right-trim only: FIM models routinely emit trailing whitespace before
-   * the stop token, which would render as cursor-on-space after Tab-accept.
-   * Leading whitespace is preserved — it can be meaningful indentation. */
-  for (char *end = text + strlen (text);
-       end > text && g_ascii_isspace ((unsigned char) end[-1]);
-       end--)
-    end[-1] = '\0';
-
-  if (*text == '\0')
-    {
-      g_free (text);
-      goto out;
-    }
+  text = sanitize_ghost_text (text);  /* consumes text */
+  if (text == NULL)
+    goto out;
 
   g_clear_pointer (&self->current_ghost, g_free);
   self->current_ghost = text;  /* take ownership */
@@ -445,6 +440,59 @@ on_completion_ready (GObject *source, GAsyncResult *result, gpointer user_data)
 
 out:
   g_object_unref (self);
+}
+
+/* Phase 2: ghost is a single-line GtkLabel overlay. Truncate @text at the
+ * first newline so display and Tab-accept agree (multi-line is phase 3), and
+ * right-trim trailing whitespace — FIM models routinely emit it before the
+ * stop token, which would render as cursor-on-space after accept. Leading
+ * whitespace is preserved (meaningful indentation). Takes ownership of @text;
+ * returns the same buffer truncated in place, or NULL (freeing @text) when
+ * nothing meaningful remains. */
+static char *
+sanitize_ghost_text (char *text)
+{
+  char *nl = strchr (text, '\n');
+  if (nl != NULL)
+    *nl = '\0';
+
+  for (char *end = text + strlen (text);
+       end > text && g_ascii_isspace ((unsigned char) end[-1]);
+       end--)
+    end[-1] = '\0';
+
+  if (*text == '\0')
+    {
+      g_free (text);
+      return NULL;
+    }
+  return text;
+}
+
+static void
+on_partial_data (LlmGhostBackend *backend, const char *text, gpointer user_data)
+{
+  (void) backend;
+  LlmGhostController *self = user_data;
+
+  /* Gate: only render while a request is in flight, so a late emission from a
+   * cancelled request can't bleed into a new context. */
+  if (self->cancellable == NULL)
+    return;
+  if (self->view == NULL || text == NULL || *text == '\0')
+    return;
+  if (!cursor_safe_for_ghost (self->view))
+    return;
+
+  /* Same single-line sanitisation as the final result, so the displayed ghost
+   * and what Tab-accept inserts agree even mid-stream. */
+  char *clean = sanitize_ghost_text (g_strdup (text));
+  if (clean == NULL)
+    return;
+
+  g_clear_pointer (&self->current_ghost, g_free);
+  self->current_ghost = clean;  /* take ownership */
+  show_ghost_at_cursor (self);
 }
 
 /* ---- rendering ----------------------------------------------------------- */

@@ -7,6 +7,12 @@ G_BEGIN_DECLS
 #define LLM_GHOST_TYPE_BACKEND (llm_ghost_backend_get_type())
 G_DECLARE_INTERFACE (LlmGhostBackend, llm_ghost_backend, LLM_GHOST, BACKEND, GObject)
 
+/* Emitted by streaming backends as completion text accumulates. Signature:
+ *   void (*) (LlmGhostBackend *self, const char *accumulated_text)
+ * request_finish() still returns the full completion; non-streaming backends
+ * never emit this. */
+#define LLM_GHOST_BACKEND_SIGNAL_PARTIAL_DATA "partial-data"
+
 struct _LlmGhostBackendInterface
 {
   GTypeInterface g_iface;

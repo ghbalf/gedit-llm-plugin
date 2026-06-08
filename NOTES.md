@@ -201,10 +201,9 @@ supports `/v1/completions` (native FIM via `suffix`) and
 `LLMGHOST_OPENAI_{BASE_URL,MODEL,API_KEY,MODE}`, optional Bearer auth.
 Built on the new shared `llmghost-http-util` (extracted from the Ollama
 backend). Reachable in the demo via `LLMGHOST_BACKEND=openai`. Covered by
-the `openai-body` and `http-util` unit suites. Still deferred: libsecret key
-storage, SSE streaming. (Claude/Gemini are now reachable via the generic
-template backend — see "Generic (template) backend" below — so no hand-written
-Claude backend is planned.)
+the `openai-body` and `http-util` unit suites. (Claude/Gemini are now reachable
+via the generic template backend — see "Generic (template) backend" below — so
+no hand-written Claude backend is planned.)
 
 **Mistral Codestral backend landed 2026-06-04.** `LlmGhostMistralBackend`
 hits the Codestral FIM endpoint (`POST {base}/fim/completions`, native
@@ -312,17 +311,52 @@ name `openai` in Preferences (or `secret-tool store --label='llmghost: openai'
 name openai`). Backed by `lib/llmghost-secret-store.{c,h}` (a `libsecret-1`
 wrapper). Hard build dependency: `libsecret-1`.
 
+### SSE streaming (landed)
+
+**Landed 2026-06-07.** OpenAI-compatible and generic/template backends now
+stream completion tokens into the ghost overlay as they arrive, instead of
+waiting for the whole HTTP body — first-token-visible drops from ~500 ms to
+~100 ms on the cloud chat backends.
+
+Mechanism: a `partial-data` signal on the `LlmGhostBackend` GInterface carries
+the **accumulated** completion text (stateless consumer); the controller renders
+each emission into the single-line overlay while a request is in flight (gated on
+`cancellable != NULL`, so a late emission from a just-cancelled request can't
+bleed into a new context). `request_finish()` still returns the full completion,
+so non-streaming-aware callers are unchanged; non-streaming backends simply never
+emit the signal. A mid-stream failure makes `request_finish()` return a `GError`
+and the controller clears the ghost (all-or-nothing, matching today's semantics).
+Partial text is run through the same single-line + right-trim cleanup as the final
+result, so the displayed ghost and what Tab/Right-accept inserts always agree.
+
+Internals: a pure SSE framing parser (`lib/llmghost-sse-parser.{c,h}`, no I/O,
+`[DONE]` emitted as an ordinary payload) drives off a streaming `http-util`
+transport (`_llm_ghost_http_post_json_stream_async`/`_finish`: `send_async` →
+`GInputStream` read loop, honors the `GCancellable`, non-2xx body surfaced as the
+error message). Backends extract a per-event delta, accumulate, and emit.
+
+Config (under each backend stanza in `settings.json`):
+- **openai**: streams by default; opt out with `"stream": false`.
+- **generic**: streams when `"stream_path"` (dotted delta path, e.g.
+  `choices.0.delta.content`) is set. `"stream"` toggles it (default true),
+  `"done_marker"` is the event payload to stop on (default `"[DONE]"`), and
+  `"stream_field"` names the body member set to the stream flag (default
+  `"stream"`; explicit `""` leaves the request template untouched).
+
+Ghost rendering stays single-line — real multi-line streaming is still the
+deferred Phase 4. Covered by the `sse-parser`, `backend-signal`, `http-util`,
+`openai-body`, `openai-stream`, `generic-body`, `generic-stream` unit suites and
+the `controller` gui subtests (incremental render, idle gating, single-line
+accept regression).
+
 ### Remaining architectural prerequisites
 1. **Secret storage**: API keys via libsecret (`gnome-keyring`). ✓ landed
    2026-06-06 — `${secret:NAME}` config refs + a Preferences manager. Plaintext
    in config / env vars still works but is no longer required.
-2. **Streaming (optional)**: cloud APIs return tokens over SSE.
-   Streaming into the overlay drops perceived latency dramatically
-   (~500 ms total → ~100 ms first-token visible). Add a
-   `partial-data` signal to `LlmGhostBackend`; non-streaming backends
-   ignore it. Implement only when a cloud backend is in and the
-   non-streaming experience is provably bad — premature for Ollama at
-   100 ms.
+2. **Streaming**: cloud APIs return tokens over SSE. ✓ landed 2026-06-07
+   — `partial-data` signal on `LlmGhostBackend`, OpenAI + generic backends
+   stream into the overlay; non-streaming backends ignore it. See "SSE
+   streaming (landed)" above.
 
 ### Suggested order
 1. `LlmGhostOpenAIBackend` first — tests "auth + base-URL + model
@@ -331,8 +365,10 @@ wrapper). Hard build dependency: `libsecret-1`.
 2. Settings layer — JSON config + live reload + Prefs button. ✓ landed 2026-06-05
 3. `LlmGhostMistralBackend` — small variation on (1), exercises FIM-
    over-cloud. ✓ landed 2026-06-04
-4. `LlmGhostClaudeBackend` — the awkward chat-FIM case.
-5. Streaming as a cross-cutting concern after backends are stable.
+4. `LlmGhostClaudeBackend` — the awkward chat-FIM case. (Superseded by the
+   generic template backend — see above; no longer planned.)
+5. Streaming as a cross-cutting concern after backends are stable. ✓ landed
+   2026-06-07 (OpenAI + generic).
 
 When the second HTTP-based backend lands (so #1 above), extract
 `lib/llmghost-http-util.{h,c}` from the Ollama backend's libsoup

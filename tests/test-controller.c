@@ -93,6 +93,15 @@ ghost_visible (Fixture *f)
   return o != NULL && gtk_widget_get_visible (GTK_WIDGET (o));
 }
 
+static char *
+ghost_text (Fixture *f)
+{
+  LlmGhostOverlay *o = find_ghost_overlay (f);
+  if (o == NULL)
+    return g_strdup ("");
+  return g_strdup (gtk_label_get_text (GTK_LABEL (o)));
+}
+
 static gboolean
 send_key_mod (Fixture *f, guint keyval, guint state)
 {
@@ -335,6 +344,60 @@ test_sanity_coords_after_scroll (void)
   fixture_free (f);
 }
 
+static void
+test_partial_renders_incrementally (void)
+{
+  Fixture *f = fixture_new ();
+  gtk_text_buffer_insert_at_cursor (buf (f), "f", -1);
+  pump (SETTLE_MS);   /* request now in-flight (parked in mock) */
+
+  mock_backend_emit_partial (MOCK_BACKEND (f->backend), "He");
+  pump (SETTLE_MS);
+  g_assert_true (ghost_visible (f));
+  char *t1 = ghost_text (f);
+  g_assert_cmpstr (t1, ==, "He");
+  g_free (t1);
+
+  mock_backend_emit_partial (MOCK_BACKEND (f->backend), "Hello");
+  pump (SETTLE_MS);
+  char *t2 = ghost_text (f);
+  g_assert_cmpstr (t2, ==, "Hello");
+  g_free (t2);
+
+  fixture_free (f);
+}
+
+static void
+test_partial_gated_when_idle (void)
+{
+  Fixture *f = fixture_new ();
+  /* No request in flight (cancellable == NULL): a stray partial must not show. */
+  mock_backend_emit_partial (MOCK_BACKEND (f->backend), "ghost");
+  pump (SETTLE_MS);
+  g_assert_false (ghost_visible (f));
+  fixture_free (f);
+}
+
+/* Regression: a multi-line partial must be truncated at the first newline
+ * before it lands in current_ghost, so Tab-accept inserts only the first line
+ * (matching the single-line overlay display) rather than the raw payload. */
+static void
+test_partial_accept_single_line (void)
+{
+  Fixture *f = fixture_new ();
+  gtk_text_buffer_insert_at_cursor (buf (f), "f", -1);
+  pump (SETTLE_MS);   /* request now in-flight */
+
+  mock_backend_emit_partial (MOCK_BACKEND (f->backend), "line1\nline2");
+  pump (SETTLE_MS);
+
+  g_assert_true (send_key (f, GDK_KEY_Tab));
+  char *text = buffer_text (f);
+  g_assert_cmpstr (text, ==, "fline1");
+  g_free (text);
+  fixture_free (f);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -348,5 +411,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/controller/ctrl-right-punctuation",  test_ctrl_right_punctuation);
   g_test_add_func ("/controller/midline-suppression",  test_midline_suppression);
   g_test_add_func ("/controller/sanity-coords",        test_sanity_coords_after_scroll);
+  g_test_add_func ("/controller/partial-incremental", test_partial_renders_incrementally);
+  g_test_add_func ("/controller/partial-gated-idle",  test_partial_gated_when_idle);
+  g_test_add_func ("/controller/partial-accept-single-line", test_partial_accept_single_line);
   return g_test_run ();
 }

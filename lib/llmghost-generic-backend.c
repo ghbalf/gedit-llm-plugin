@@ -4,6 +4,7 @@
 #include "llmghost-generic-backend.h"
 #include "llmghost-text-util.h"
 #include "llmghost-http-util.h"
+#include "llmghost-backend-internal.h"
 
 #include <string.h>
 #include <gio/gio.h>
@@ -79,18 +80,42 @@ substitute_node (JsonNode *node, const char *prefix, const char *suffix, const c
 }
 
 char *
-_llm_ghost_generic_build_body (JsonObject *template,
-                               const char *prefix,
-                               const char *suffix,
-                               const char *model)
+_llm_ghost_generic_build_body_with_stream (JsonObject *template,
+                                           const char *prefix,
+                                           const char *suffix,
+                                           const char *model,
+                                           const char *stream_field,
+                                           gboolean    stream_value)
 {
-  /* Deep-copy so the stored template is never mutated. */
+  /* Deep-copy so the stored template is never mutated. json_node_copy() on an
+   * object node is shallow in json-glib < 1.10 (it shares the same JsonObject),
+   * so serialize-and-reparse to get a fully independent tree. */
   JsonNode *wrap = json_node_alloc ();
   json_node_init_object (wrap, template);   /* refs template */
-  JsonNode *copy = json_node_copy (wrap);   /* deep copy */
+  JsonGenerator *cgen = json_generator_new ();
+  json_generator_set_root (cgen, wrap);
+  char *serialized = json_generator_to_data (cgen, NULL);
+  g_object_unref (cgen);
   json_node_unref (wrap);
 
+  JsonNode *copy = json_from_string (serialized, NULL);
+  g_free (serialized);
+
+  /* A serialized JsonObject always reparses as an object; guard anyway so a
+   * future non-object template can never crash here. */
+  if (copy == NULL || !JSON_NODE_HOLDS_OBJECT (copy))
+    {
+      g_clear_pointer (&copy, json_node_unref);
+      return g_strdup ("{}");
+    }
+
   substitute_node (copy, prefix, suffix, model);
+
+  if (stream_field != NULL && *stream_field != '\0')
+    {
+      JsonObject *obj = json_node_get_object (copy);
+      json_object_set_boolean_member (obj, stream_field, stream_value);
+    }
 
   JsonGenerator *gen = json_generator_new ();
   json_generator_set_root (gen, copy);      /* transfer none */
@@ -98,6 +123,16 @@ _llm_ghost_generic_build_body (JsonObject *template,
   g_object_unref (gen);
   json_node_unref (copy);
   return out;
+}
+
+char *
+_llm_ghost_generic_build_body (JsonObject *template,
+                               const char *prefix,
+                               const char *suffix,
+                               const char *model)
+{
+  return _llm_ghost_generic_build_body_with_stream (template, prefix, suffix,
+                                                    model, NULL, FALSE);
 }
 
 /* ---- response-path extraction ------------------------------------------ */
@@ -183,6 +218,13 @@ _llm_ghost_generic_extract (JsonNode *root, const char *path, GError **error)
   return g_strdup (json_node_get_string (cur));
 }
 
+char *
+_llm_ghost_generic_extract_delta (JsonNode *event, const char *path)
+{
+  char *s = _llm_ghost_generic_extract (event, path, NULL);
+  return s != NULL ? s : g_strdup ("");
+}
+
 /* ---- type --------------------------------------------------------------- */
 
 #define REQUEST_TIMEOUT_SEC 30
@@ -197,6 +239,11 @@ struct _LlmGhostGenericBackend
   char        *model;              /* or NULL */
   JsonObject  *request_template;   /* owned ref, or NULL */
   char        *response_path;
+
+  gboolean  stream;          /* gate (default TRUE) */
+  char     *stream_path;     /* dotted path to per-event delta, or NULL */
+  char     *done_marker;     /* sentinel payload to skip (default "[DONE]") */
+  char     *stream_field;    /* body member to set to stream value, or NULL */
 };
 
 static void llm_ghost_generic_backend_iface_init (LlmGhostBackendInterface *iface);
@@ -238,6 +285,64 @@ on_http_done (GObject *source, GAsyncResult *result, gpointer user_data)
   g_object_unref (task);
 }
 
+typedef struct {
+  LlmGhostGenericBackend *self;   /* borrowed; outer task holds a ref */
+  GString                *acc;
+  const char             *stream_path;   /* borrowed from self */
+  const char             *done_marker;   /* borrowed from self */
+} GenericStreamCtx;
+
+static void
+generic_stream_ctx_free (gpointer data)
+{
+  GenericStreamCtx *c = data;
+  g_string_free (c->acc, TRUE);
+  g_free (c);
+}
+
+static void
+generic_on_event (const char *payload, gpointer user_data)
+{
+  GenericStreamCtx *ctx = user_data;
+  if (g_strcmp0 (payload, ctx->done_marker) == 0)
+    return;
+
+  JsonNode *node = _llm_ghost_http_parse_json (payload);
+  if (node == NULL)
+    return;
+
+  char *delta = _llm_ghost_generic_extract_delta (node, ctx->stream_path);
+  json_node_unref (node);
+  if (*delta != '\0')
+    {
+      g_string_append (ctx->acc, delta);
+      char *clean = _llm_ghost_clean_single_line (ctx->acc->str);
+      _llm_ghost_backend_emit_partial_data (LLM_GHOST_BACKEND (ctx->self), clean);
+      g_free (clean);
+    }
+  g_free (delta);
+}
+
+static void
+generic_on_stream_done (GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  (void) source;
+  GTask *outer = user_data;
+  GenericStreamCtx *ctx = g_task_get_task_data (outer);
+  GError *error = NULL;
+
+  if (!_llm_ghost_http_post_json_stream_finish (result, &error))
+    {
+      g_task_return_error (outer, error);
+      g_object_unref (outer);
+      return;
+    }
+
+  char *out = _llm_ghost_clean_single_line (ctx->acc->str);
+  g_task_return_pointer (outer, out, g_free);
+  g_object_unref (outer);
+}
+
 static void
 generic_request (LlmGhostBackend     *backend,
                  const char          *prefix,
@@ -255,6 +360,26 @@ generic_request (LlmGhostBackend     *backend,
       g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
                                "generic backend: incomplete configuration");
       g_object_unref (task);
+      return;
+    }
+
+  if (self->stream && self->stream_path != NULL && *self->stream_path != '\0')
+    {
+      GenericStreamCtx *ctx = g_new0 (GenericStreamCtx, 1);
+      ctx->self        = self;
+      ctx->acc         = g_string_new (NULL);
+      ctx->stream_path = self->stream_path;
+      ctx->done_marker = self->done_marker;
+      g_task_set_task_data (task, ctx, generic_stream_ctx_free);
+
+      char *body = _llm_ghost_generic_build_body_with_stream (
+        self->request_template, prefix, suffix, self->model,
+        self->stream_field, TRUE);
+
+      _llm_ghost_http_post_json_stream_async (self->session, self->url,
+                                              self->headers, body,
+                                              generic_on_event, ctx, cancellable,
+                                              generic_on_stream_done, task);
       return;
     }
 
@@ -290,6 +415,9 @@ llm_ghost_generic_backend_finalize (GObject *object)
   g_clear_pointer (&self->model, g_free);
   g_clear_pointer (&self->request_template, json_object_unref);
   g_clear_pointer (&self->response_path, g_free);
+  g_clear_pointer (&self->stream_path,  g_free);
+  g_clear_pointer (&self->done_marker,  g_free);
+  g_clear_pointer (&self->stream_field, g_free);
   G_OBJECT_CLASS (llm_ghost_generic_backend_parent_class)->finalize (object);
 }
 
@@ -304,6 +432,9 @@ llm_ghost_generic_backend_init (LlmGhostGenericBackend *self)
 {
   self->session = soup_session_new ();
   soup_session_set_timeout (self->session, REQUEST_TIMEOUT_SEC);
+  self->stream       = TRUE;
+  self->done_marker  = g_strdup ("[DONE]");
+  self->stream_field = g_strdup ("stream");
 }
 
 /* ---- construction ------------------------------------------------------- */
@@ -331,4 +462,32 @@ llm_ghost_generic_backend_new (const char *url,
     g_warning ("generic backend: no \"response_path\" configured; requests will fail");
 
   return LLM_GHOST_BACKEND (self);
+}
+
+void
+_llm_ghost_generic_backend_set_streaming (LlmGhostGenericBackend *self,
+                                          gboolean    stream,
+                                          const char *stream_path,
+                                          const char *done_marker,
+                                          const char *stream_field)
+{
+  g_return_if_fail (LLM_GHOST_IS_GENERIC_BACKEND (self));
+  self->stream = stream;
+
+  g_clear_pointer (&self->stream_path, g_free);
+  self->stream_path = (stream_path != NULL && *stream_path != '\0')
+                        ? g_strdup (stream_path) : NULL;
+
+  if (done_marker != NULL && *done_marker != '\0')
+    {
+      g_clear_pointer (&self->done_marker, g_free);
+      self->done_marker = g_strdup (done_marker);
+    }
+
+  /* NULL -> keep default "stream"; explicit "" -> disable body mutation. */
+  if (stream_field != NULL)
+    {
+      g_clear_pointer (&self->stream_field, g_free);
+      self->stream_field = g_strdup (stream_field);
+    }
 }
