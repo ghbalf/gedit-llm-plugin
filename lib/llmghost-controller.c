@@ -20,6 +20,7 @@ struct _LlmGhostController
   char                *current_ghost; /* the suggestion text currently displayed */
 
   guint                debounce_ms;
+  guint                max_lines;
   guint                debounce_id;     /* GSource id of pending debounce, 0 if none */
 
   gulong               h_buffer_changed;
@@ -52,7 +53,6 @@ static gboolean on_debounce_fire          (gpointer user_data);
 static void     on_completion_ready       (GObject *source, GAsyncResult *result, gpointer user_data);
 static void     on_partial_data           (LlmGhostBackend *backend, const char *text, gpointer user_data);
 static void     restart_request           (LlmGhostController *self);
-static char *   sanitize_ghost_text       (char *text);
 static void     show_ghost_at_cursor      (LlmGhostController *self);
 static void     reposition_ghost          (LlmGhostController *self);
 static void     hide_ghost                (LlmGhostController *self);
@@ -68,6 +68,7 @@ static void
 llm_ghost_controller_init (LlmGhostController *self)
 {
   self->debounce_ms = DEFAULT_DEBOUNCE_MS;
+  self->max_lines   = 1;   /* single-line until the multi-line renderer lands */
   self->overlay = LLM_GHOST_OVERLAY (llm_ghost_overlay_new ());
   g_object_ref_sink (self->overlay);
 }
@@ -429,7 +430,9 @@ on_completion_ready (GObject *source, GAsyncResult *result, gpointer user_data)
       goto out;
     }
 
-  text = sanitize_ghost_text (text);  /* consumes text */
+  char *clamped = _llm_ghost_controller_clamp_ghost_text (text, self->max_lines);
+  g_free (text);
+  text = clamped;
   if (text == NULL)
     goto out;
 
@@ -442,31 +445,56 @@ out:
   g_object_unref (self);
 }
 
-/* Phase 2: ghost is a single-line GtkLabel overlay. Truncate @text at the
- * first newline so display and Tab-accept agree (multi-line is phase 3), and
- * right-trim trailing whitespace — FIM models routinely emit it before the
- * stop token, which would render as cursor-on-space after accept. Leading
- * whitespace is preserved (meaningful indentation). Takes ownership of @text;
- * returns the same buffer truncated in place, or NULL (freeing @text) when
- * nothing meaningful remains. */
-static char *
-sanitize_ghost_text (char *text)
+/* Phase 4: clamp @text to at most @max_lines lines, then right-trim trailing
+ * whitespace and blank lines (FIM models emit trailing whitespace; trailing
+ * blank lines would open empty gap rows). Leading whitespace is preserved
+ * (meaningful indentation). Returns a newly-allocated string, or NULL when
+ * nothing meaningful remains. This is the single source of truth: current_ghost
+ * holds exactly this string, so the displayed ghost and what accept inserts
+ * always agree. */
+char *
+_llm_ghost_controller_clamp_ghost_text (const char *text, guint max_lines)
 {
-  char *nl = strchr (text, '\n');
-  if (nl != NULL)
-    *nl = '\0';
+  if (text == NULL)
+    return NULL;
+  if (max_lines == 0)
+    max_lines = 1;
 
-  for (char *end = text + strlen (text);
-       end > text && g_ascii_isspace ((unsigned char) end[-1]);
+  char *copy = g_strdup (text);
+
+  /* Cut after the max_lines-th line: find the max_lines-th '\n'. */
+  guint nl = 0;
+  for (char *q = copy; *q != '\0'; q++)
+    if (*q == '\n' && ++nl == max_lines)
+      {
+        *q = '\0';
+        break;
+      }
+
+  /* Right-trim trailing whitespace (removes trailing blank lines + spaces). */
+  for (char *end = copy + strlen (copy);
+       end > copy && g_ascii_isspace ((unsigned char) end[-1]);
        end--)
     end[-1] = '\0';
 
-  if (*text == '\0')
+  if (*copy == '\0')
     {
-      g_free (text);
+      g_free (copy);
       return NULL;
     }
-  return text;
+  return copy;
+}
+
+guint
+_llm_ghost_controller_count_lines (const char *text)
+{
+  if (text == NULL || *text == '\0')
+    return 0;
+  guint n = 1;
+  for (const char *p = text; *p != '\0'; p++)
+    if (*p == '\n')
+      n++;
+  return n;
 }
 
 static void
@@ -484,9 +512,9 @@ on_partial_data (LlmGhostBackend *backend, const char *text, gpointer user_data)
   if (!cursor_safe_for_ghost (self->view))
     return;
 
-  /* Same single-line sanitisation as the final result, so the displayed ghost
-   * and what Tab-accept inserts agree even mid-stream. */
-  char *clean = sanitize_ghost_text (g_strdup (text));
+  /* Same clamp as the final result, so the displayed ghost and what accept
+   * inserts agree even mid-stream. */
+  char *clean = _llm_ghost_controller_clamp_ghost_text (text, self->max_lines);
   if (clean == NULL)
     return;
 
