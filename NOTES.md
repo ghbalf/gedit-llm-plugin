@@ -125,23 +125,44 @@ validation of the cursor's line — `get_iter_location()` /
 `get_cursor_locations()` can return stale or sub-line-shifted values
 on a freshly-typed last line of a scrolled view.
 
-## Phase 4 — multi-line ghost rendering (deferred)
+## Phase 4 — multi-line ghost rendering (landed)
 
-Currently we truncate completions at the first `\n` and `GtkLabel` is
-single-line. Real multi-line ghost (Copilot-style block suggestions)
-needs:
+**Landed 2026-06-10.** Completions can span multiple lines, Copilot-style:
+the first ghost line continues inline at the cursor; the remaining lines
+render as a block below, with the real buffer text **pushed down** so the
+block never overlaps existing code.
 
-- Accept multi-line into `current_ghost`.
-- Either replace the `GtkLabel` with a multi-line label/box that lays out
-  with the view's line-height, OR render via custom `gtk_widget_draw`.
-- Care around line-wrap interaction.
-- Note: with Phase 3's GTK-3-buffer-coords fix, the overlay container
-  is anchored to a single buffer position; multi-line rendering will
-  need to either lay out within one widget or add multiple anchored
-  child widgets (one per ghost line).
+Rendering (Approach C) opens a real vertical gap below the cursor line with a
+`pixels-below-lines` spacer `GtkTextTag` applied to that line — this reflows
+the rows below WITHOUT mutating the buffer (no `::changed`, no modified flag,
+no undo side effects) — and floats a second multi-line `LlmGhostOverlay` label
+(`overlay_block`) into the gap at column 0. The existing single-line overlay
+shows the inline first line. The spacer tag is created in `attach_to_view`,
+removed by `clear_spacer` on every hide/re-show/detach (so a stray gap can
+never outlive the ghost), and torn down with the controller.
 
-Revisit once Phase 5 / 6 backends are landed and we have real signal
-about which suggestions feel "wanted to span multiple lines".
+`current_ghost` stays the single source of truth: a new top-level `max_lines`
+setting (default 8) clamps the suggestion in the controller via
+`_llm_ghost_controller_clamp_ghost_text`, so the displayed ghost and what
+Tab/Right/Ctrl+Right insert always agree (acceptance keys are unchanged; they
+now span lines). Streaming grows the block live as `partial-data` arrives.
+
+Backends stop forcing single-line when `max_lines > 1`: the factory derives
+`single_line = (max_lines == 1)` from the one setting and pushes it to the
+active backend. In single-line mode the backends keep the `\n` stop token
+(OpenAI/Ollama/Mistral) and the OpenAI/generic result cleaner truncates at the
+first newline as before; in multi-line mode both the stop token and the
+first-newline truncation are dropped (the cleaner still strips outer whitespace
+and ``` code fences). Covered by `ghost-accept` (clamp/count-lines),
+`text-util` (multi-line cleaner), the `*-body` stop-token suites,
+`generic-stream` (end-to-end multi-line), `settings` (`max_lines`), and the
+`controller` gui subtests (inline/block split, line cap, multi-line accept,
+spacer-gap teardown on detach).
+
+With Phase 3's GTK-3 buffer-coords fix, both overlay children are anchored at
+buffer coordinates (no `buffer_to_window_coords` step). Variable per-line
+heights are approximated as `n_continuation_lines × cursor_line_height`;
+pathological mixed-height lines may misalign slightly (acceptable for v1).
 
 ## Phase 5 — Supermaven backend (DROPPED 2026-06-03)
 
@@ -258,6 +279,7 @@ Schema:
   "_help": "…ignored; _-prefixed keys are pseudo-comments",
   "backend": "ollama",          // active backend: ollama | openai | mistral | generic
   "debounce_ms": 80,            // optional controller debounce override
+  "max_lines": 8,              // optional ghost line cap (1 = single-line)
   "backends": {
     "ollama":  { "host": "spark-2448", "port": 11434,
                  "model": "qwen3-coder-next:latest", "tokens": "Qwen" },
@@ -288,7 +310,10 @@ code context are escaped automatically. `${ENV}` interpolation (settings) and
 `{{…}}` (per request) are separate phases, so secrets stay in the environment;
 an API key that goes in the URL query string (Gemini) is just
 `"url": "…?key=${GEMINI_API_KEY}"`. The response is run through the same
-single-line/fence-strip cleanup as the OpenAI chat mode. Ready-to-paste
+whitespace-strip / ``` code-fence cleanup as the OpenAI chat mode; it truncates
+at the first newline only in single-line mode (`max_lines == 1`). For multi-line
+output set a top-level `max_lines > 1` AND keep any newline stop out of the
+`request_template` (the template owns its own stop tokens). Ready-to-paste
 templates live in `examples/anthropic.json` and `examples/gemini.json`.
 
 This does not replace the OpenAI-compat backend, which remains the better path
@@ -343,8 +368,8 @@ Config (under each backend stanza in `settings.json`):
   `"stream_field"` names the body member set to the stream flag (default
   `"stream"`; explicit `""` leaves the request template untouched).
 
-Ghost rendering stays single-line — real multi-line streaming is still the
-deferred Phase 4. Covered by the `sse-parser`, `backend-signal`, `http-util`,
+Multi-line streaming landed in Phase 4 (above): with `max_lines > 1` the block
+grows live as partials arrive. Covered by the `sse-parser`, `backend-signal`, `http-util`,
 `openai-body`, `openai-stream`, `generic-body`, `generic-stream` unit suites and
 the `controller` gui subtests (incremental render, idle gating, single-line
 accept regression).
