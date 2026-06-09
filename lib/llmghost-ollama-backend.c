@@ -25,6 +25,7 @@ struct _LlmGhostOllamaBackend
 
   guint               num_predict;
   double              temperature;
+  gboolean            single_line;
 };
 
 static void llm_ghost_ollama_backend_iface_init (LlmGhostBackendInterface *iface);
@@ -41,7 +42,8 @@ _llm_ghost_ollama_build_request_body (const char              *model,
                                       const char              *prefix,
                                       const char              *suffix,
                                       guint                    num_predict,
-                                      double                   temperature)
+                                      double                   temperature,
+                                      gboolean                 single_line)
 {
   /* Bypass Ollama's prompt-template layer with raw=true and inject the
    * configured family's FIM sentinels directly. Works on models whose
@@ -80,7 +82,8 @@ _llm_ghost_ollama_build_request_body (const char              *model,
   /* Newline forces single-line completion (phase 2). The remaining stops
    * are family-specific sentinel tokens that should never leak into the
    * response. */
-  json_builder_add_string_value (b, "\n");
+  if (single_line)
+    json_builder_add_string_value (b, "\n");
   for (gsize i = 0; tokens->stop_tokens != NULL && tokens->stop_tokens[i] != NULL; i++)
     json_builder_add_string_value (b, tokens->stop_tokens[i]);
   json_builder_end_array (b);
@@ -165,7 +168,8 @@ ollama_request (LlmGhostBackend     *backend,
                                self->host, (unsigned) self->port);
   char *body = _llm_ghost_ollama_build_request_body (self->model, self->fim_tokens,
                                                      prefix, suffix,
-                                                     self->num_predict, self->temperature);
+                                                     self->num_predict, self->temperature,
+                                                     self->single_line);
 
   _llm_ghost_http_post_json_async (self->session, url, NULL, body,
                                    cancellable, on_ollama_response, task);
@@ -203,6 +207,14 @@ llm_ghost_ollama_backend_set_fim_tokens (LlmGhostOllamaBackend   *self,
   self->fim_tokens = llm_ghost_fim_tokens_copy (src);
 }
 
+void
+llm_ghost_ollama_backend_set_single_line (LlmGhostOllamaBackend *self,
+                                          gboolean               single_line)
+{
+  g_return_if_fail (LLM_GHOST_IS_OLLAMA_BACKEND (self));
+  self->single_line = single_line;
+}
+
 /* ---- GObject lifecycle --------------------------------------------------- */
 
 static void
@@ -227,9 +239,10 @@ llm_ghost_ollama_backend_init (LlmGhostOllamaBackend *self)
 {
   self->session = soup_session_new ();
   soup_session_set_timeout (self->session, REQUEST_TIMEOUT_SEC);
-  self->num_predict = DEFAULT_NUM_PREDICT;
-  self->temperature = DEFAULT_TEMPERATURE;
-  self->fim_tokens  = llm_ghost_fim_tokens_copy (llm_ghost_fim_tokens_qwen ());
+  self->num_predict  = DEFAULT_NUM_PREDICT;
+  self->temperature  = DEFAULT_TEMPERATURE;
+  self->single_line  = TRUE;
+  self->fim_tokens   = llm_ghost_fim_tokens_copy (llm_ghost_fim_tokens_qwen ());
 }
 
 LlmGhostBackend *

@@ -14,6 +14,7 @@ char *_llm_ghost_ollama_build_request_body (const char              *model,
                                             const char              *prefix,
                                             const char              *suffix,
                                             guint                    num_predict,
-                                            double                   temperature);
+                                            double                   temperature,
+                                            gboolean                 single_line);
 
 G_END_DECLS
