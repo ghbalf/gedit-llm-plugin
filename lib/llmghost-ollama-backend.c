@@ -215,6 +215,13 @@ llm_ghost_ollama_backend_set_single_line (LlmGhostOllamaBackend *self,
   self->single_line = single_line;
 }
 
+gboolean
+_llm_ghost_ollama_backend_get_single_line (LlmGhostOllamaBackend *self)
+{
+  g_return_val_if_fail (LLM_GHOST_IS_OLLAMA_BACKEND (self), TRUE);
+  return self->single_line;
+}
+
 /* ---- GObject lifecycle --------------------------------------------------- */
 
 static void
