@@ -21,7 +21,7 @@ llm_ghost_overlay_init (LlmGhostOverlay *self)
 
   gtk_label_set_xalign (label, 0.0f);
   gtk_label_set_yalign (label, 0.0f);
-  gtk_label_set_single_line_mode (label, TRUE);
+  gtk_label_set_single_line_mode (label, TRUE);   /* default; cleared by _new_multiline */
   gtk_label_set_use_markup (label, TRUE);
   gtk_label_set_selectable (label, FALSE);
 
@@ -36,6 +36,14 @@ llm_ghost_overlay_new (void)
   return g_object_new (LLM_GHOST_TYPE_OVERLAY, NULL);
 }
 
+GtkWidget *
+llm_ghost_overlay_new_multiline (void)
+{
+  GtkWidget *w = g_object_new (LLM_GHOST_TYPE_OVERLAY, NULL);
+  gtk_label_set_single_line_mode (GTK_LABEL (w), FALSE);
+  return w;
+}
+
 void
 llm_ghost_overlay_set_text (LlmGhostOverlay *self,
                             const char      *text)
@@ -48,11 +56,7 @@ llm_ghost_overlay_set_text (LlmGhostOverlay *self,
       return;
     }
 
-  /* Truncate at first newline for phase 1 — single-line ghost only. */
-  const char *nl = strchr (text, '\n');
-  char *line = nl ? g_strndup (text, (size_t) (nl - text)) : g_strdup (text);
-
-  char *escaped = g_markup_escape_text (line, -1);
+  char *escaped = g_markup_escape_text (text, -1);
   char *markup = g_strdup_printf (
       "<span foreground=\"#888888\" style=\"italic\">%s</span>", escaped);
 
@@ -60,5 +64,4 @@ llm_ghost_overlay_set_text (LlmGhostOverlay *self,
 
   g_free (markup);
   g_free (escaped);
-  g_free (line);
 }
