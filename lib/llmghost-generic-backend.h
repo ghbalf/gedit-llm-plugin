@@ -28,4 +28,9 @@ LlmGhostBackend *llm_ghost_generic_backend_new (const char *url,
                                                 JsonObject *request_template,
                                                 const char *response_path);
 
+/* When TRUE (default) the completion is truncated to a single line. Set FALSE
+ * for multi-line ghost output. */
+void llm_ghost_generic_backend_set_single_line (LlmGhostGenericBackend *self,
+                                                gboolean                single_line);
+
 G_END_DECLS

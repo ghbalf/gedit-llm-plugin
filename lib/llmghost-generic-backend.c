@@ -241,6 +241,7 @@ struct _LlmGhostGenericBackend
   char        *response_path;
 
   gboolean  stream;          /* gate (default TRUE) */
+  gboolean  single_line;     /* truncate to first line (default TRUE) */
   char     *stream_path;     /* dotted path to per-event delta, or NULL */
   char     *done_marker;     /* sentinel payload to skip (default "[DONE]") */
   char     *stream_field;    /* body member to set to stream value, or NULL */
@@ -279,7 +280,7 @@ on_http_done (GObject *source, GAsyncResult *result, gpointer user_data)
       return;
     }
 
-  char *clean = _llm_ghost_clean_single_line (raw);
+  char *clean = _llm_ghost_clean_text (raw, self->single_line);
   g_free (raw);
   g_task_return_pointer (task, clean, g_free);
   g_object_unref (task);
@@ -290,6 +291,7 @@ typedef struct {
   GString                *acc;
   const char             *stream_path;   /* borrowed from self */
   const char             *done_marker;   /* borrowed from self */
+  gboolean                single_line;
 } GenericStreamCtx;
 
 static void
@@ -316,7 +318,7 @@ generic_on_event (const char *payload, gpointer user_data)
   if (*delta != '\0')
     {
       g_string_append (ctx->acc, delta);
-      char *clean = _llm_ghost_clean_single_line (ctx->acc->str);
+      char *clean = _llm_ghost_clean_text (ctx->acc->str, ctx->single_line);
       _llm_ghost_backend_emit_partial_data (LLM_GHOST_BACKEND (ctx->self), clean);
       g_free (clean);
     }
@@ -338,7 +340,7 @@ generic_on_stream_done (GObject *source, GAsyncResult *result, gpointer user_dat
       return;
     }
 
-  char *out = _llm_ghost_clean_single_line (ctx->acc->str);
+  char *out = _llm_ghost_clean_text (ctx->acc->str, ctx->single_line);
   g_task_return_pointer (outer, out, g_free);
   g_object_unref (outer);
 }
@@ -370,6 +372,7 @@ generic_request (LlmGhostBackend     *backend,
       ctx->acc         = g_string_new (NULL);
       ctx->stream_path = self->stream_path;
       ctx->done_marker = self->done_marker;
+      ctx->single_line = self->single_line;
       g_task_set_task_data (task, ctx, generic_stream_ctx_free);
 
       char *body = _llm_ghost_generic_build_body_with_stream (
@@ -433,6 +436,7 @@ llm_ghost_generic_backend_init (LlmGhostGenericBackend *self)
   self->session = soup_session_new ();
   soup_session_set_timeout (self->session, REQUEST_TIMEOUT_SEC);
   self->stream       = TRUE;
+  self->single_line  = TRUE;
   self->done_marker  = g_strdup ("[DONE]");
   self->stream_field = g_strdup ("stream");
 }
@@ -490,4 +494,12 @@ _llm_ghost_generic_backend_set_streaming (LlmGhostGenericBackend *self,
       g_clear_pointer (&self->stream_field, g_free);
       self->stream_field = g_strdup (stream_field);
     }
+}
+
+void
+llm_ghost_generic_backend_set_single_line (LlmGhostGenericBackend *self,
+                                           gboolean                single_line)
+{
+  g_return_if_fail (LLM_GHOST_IS_GENERIC_BACKEND (self));
+  self->single_line = single_line;
 }
