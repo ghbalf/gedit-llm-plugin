@@ -30,7 +30,7 @@ parse_node (const char *json)
 static void
 test_completions_body (void)
 {
-  char *body = _llm_ghost_openai_build_completions_body ("m", "int main", "}", 64, 0.2, FALSE);
+  char *body = _llm_ghost_openai_build_completions_body ("m", "int main", "}", 64, 0.2, FALSE, TRUE);
   JsonObject *obj = parse_object (body);
 
   g_assert_cmpstr (json_object_get_string_member (obj, "model"),  ==, "m");
@@ -51,7 +51,7 @@ test_completions_body (void)
 static void
 test_chat_body (void)
 {
-  char *body = _llm_ghost_openai_build_chat_body ("m", "foo(", ")", 64, 0.2, FALSE);
+  char *body = _llm_ghost_openai_build_chat_body ("m", "foo(", ")", 64, 0.2, FALSE, TRUE);
   JsonObject *obj = parse_object (body);
 
   g_assert_cmpstr (json_object_get_string_member (obj, "model"), ==, "m");
@@ -75,7 +75,7 @@ test_extract_completions (void)
 {
   JsonNode *node = parse_node ("{\"choices\":[{\"text\":\"hello\"}]}");
   GError *error = NULL;
-  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_COMPLETIONS, &error);
+  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_COMPLETIONS, TRUE, &error);
   g_assert_no_error (error);
   g_assert_cmpstr (out, ==, "hello");
   g_free (out);
@@ -88,9 +88,23 @@ test_extract_chat_cleans (void)
   JsonNode *node = parse_node (
       "{\"choices\":[{\"message\":{\"content\":\"```\\nfoo()\\n```\"}}]}");
   GError *error = NULL;
-  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_CHAT, &error);
+  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_CHAT, TRUE, &error);
   g_assert_no_error (error);
   g_assert_cmpstr (out, ==, "foo()");
+  g_free (out);
+  json_node_unref (node);
+}
+
+static void
+test_extract_chat_multiline (void)
+{
+  /* single_line=FALSE: the extractor keeps every line (unfencing still runs). */
+  JsonNode *node = parse_node (
+      "{\"choices\":[{\"message\":{\"content\":\"line1\\nline2\\nline3\"}}]}");
+  GError *error = NULL;
+  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_CHAT, FALSE, &error);
+  g_assert_no_error (error);
+  g_assert_cmpstr (out, ==, "line1\nline2\nline3");
   g_free (out);
   json_node_unref (node);
 }
@@ -100,7 +114,7 @@ test_extract_error_object (void)
 {
   JsonNode *node = parse_node ("{\"error\":{\"message\":\"bad key\"}}");
   GError *error = NULL;
-  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_CHAT, &error);
+  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_CHAT, TRUE, &error);
   g_assert_null (out);
   g_assert_nonnull (error);
   g_assert_nonnull (g_strstr_len (error->message, -1, "bad key"));
@@ -113,7 +127,7 @@ test_extract_empty_choices (void)
 {
   JsonNode *node = parse_node ("{\"choices\":[]}");
   GError *error = NULL;
-  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_COMPLETIONS, &error);
+  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_COMPLETIONS, TRUE, &error);
   g_assert_no_error (error);
   g_assert_cmpstr (out, ==, "");   /* no suggestion */
   g_free (out);
@@ -126,7 +140,7 @@ test_extract_error_string (void)
   /* Some compat servers return error as a bare string rather than an object. */
   JsonNode *node = parse_node ("{\"error\":\"rate limited\"}");
   GError *error = NULL;
-  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_CHAT, &error);
+  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_CHAT, TRUE, &error);
   g_assert_null (out);
   g_assert_nonnull (error);
   g_assert_nonnull (g_strstr_len (error->message, -1, "rate limited"));
@@ -140,7 +154,7 @@ test_extract_missing_choices (void)
   /* No "choices" member at all → no suggestion, no error. */
   JsonNode *node = parse_node ("{}");
   GError *error = NULL;
-  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_COMPLETIONS, &error);
+  char *out = _llm_ghost_openai_extract_completion (node, LLM_GHOST_OPENAI_MODE_COMPLETIONS, TRUE, &error);
   g_assert_no_error (error);
   g_assert_cmpstr (out, ==, "");
   g_free (out);
@@ -150,8 +164,8 @@ test_extract_missing_choices (void)
 static void
 test_chat_body_stream_flag (void)
 {
-  char *on  = _llm_ghost_openai_build_chat_body ("m", "p", "s", 64, 0.2, TRUE);
-  char *off = _llm_ghost_openai_build_chat_body ("m", "p", "s", 64, 0.2, FALSE);
+  char *on  = _llm_ghost_openai_build_chat_body ("m", "p", "s", 64, 0.2, TRUE,  TRUE);
+  char *off = _llm_ghost_openai_build_chat_body ("m", "p", "s", 64, 0.2, FALSE, TRUE);
   g_assert_nonnull (g_strstr_len (on,  -1, "\"stream\":true"));
   g_assert_nonnull (g_strstr_len (off, -1, "\"stream\":false"));
   g_free (on);
@@ -161,8 +175,8 @@ test_chat_body_stream_flag (void)
 static void
 test_completions_body_stream_flag (void)
 {
-  char *on  = _llm_ghost_openai_build_completions_body ("m", "p", "s", 64, 0.2, TRUE);
-  char *off = _llm_ghost_openai_build_completions_body ("m", "p", "s", 64, 0.2, FALSE);
+  char *on  = _llm_ghost_openai_build_completions_body ("m", "p", "s", 64, 0.2, TRUE,  TRUE);
+  char *off = _llm_ghost_openai_build_completions_body ("m", "p", "s", 64, 0.2, FALSE, TRUE);
   g_assert_nonnull (g_strstr_len (on,  -1, "\"stream\":true"));
   g_assert_nonnull (g_strstr_len (off, -1, "\"stream\":false"));
   g_free (on);
@@ -240,6 +254,28 @@ test_delta_error_member (void)
   json_node_unref (n);
 }
 
+static void
+test_completions_stop_single_line (void)
+{
+  char *on  = _llm_ghost_openai_build_completions_body ("m","p","s",64,0.2, FALSE, TRUE);
+  char *off = _llm_ghost_openai_build_completions_body ("m","p","s",64,0.2, FALSE, FALSE);
+  g_assert_nonnull (g_strstr_len (on,  -1, "\"stop\""));   /* single-line keeps it */
+  g_assert_null    (g_strstr_len (off, -1, "\"stop\""));   /* multi-line drops it */
+  g_free (on);
+  g_free (off);
+}
+
+static void
+test_chat_stop_single_line (void)
+{
+  char *on  = _llm_ghost_openai_build_chat_body ("m","p","s",64,0.2, FALSE, TRUE);
+  char *off = _llm_ghost_openai_build_chat_body ("m","p","s",64,0.2, FALSE, FALSE);
+  g_assert_nonnull (g_strstr_len (on,  -1, "\"stop\""));
+  g_assert_null    (g_strstr_len (off, -1, "\"stop\""));
+  g_free (on);
+  g_free (off);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -248,6 +284,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/openai-body/chat",             test_chat_body);
   g_test_add_func ("/openai-body/extract-completions", test_extract_completions);
   g_test_add_func ("/openai-body/extract-chat",     test_extract_chat_cleans);
+  g_test_add_func ("/openai-body/extract-chat-multiline", test_extract_chat_multiline);
   g_test_add_func ("/openai-body/extract-error",    test_extract_error_object);
   g_test_add_func ("/openai-body/extract-error-string", test_extract_error_string);
   g_test_add_func ("/openai-body/extract-empty",    test_extract_empty_choices);
@@ -260,5 +297,7 @@ main (int argc, char *argv[])
   g_test_add_func ("/openai/delta-role-only",       test_delta_role_only_is_empty);
   g_test_add_func ("/openai/delta-finish-chunk",    test_delta_finish_chunk_is_empty);
   g_test_add_func ("/openai/delta-error-member",    test_delta_error_member);
+  g_test_add_func ("/openai/completions-stop-single-line", test_completions_stop_single_line);
+  g_test_add_func ("/openai/chat-stop-single-line",        test_chat_stop_single_line);
   return g_test_run ();
 }

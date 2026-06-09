@@ -14,20 +14,23 @@ char *_llm_ghost_openai_build_completions_body (const char *model,
                                                 const char *suffix,
                                                 guint       max_tokens,
                                                 double      temperature,
-                                                gboolean    stream);
+                                                gboolean    stream,
+                                                gboolean    single_line);
 
 char *_llm_ghost_openai_build_chat_body        (const char *model,
                                                 const char *prefix,
                                                 const char *suffix,
                                                 guint       max_tokens,
                                                 double      temperature,
-                                                gboolean    stream);
+                                                gboolean    stream,
+                                                gboolean    single_line);
 
 /* Pull the completion text from a parsed response @root. For CHAT, cleans
- * via _llm_ghost_clean_single_line. Returns "" for no/empty choices; NULL +
- * @error when the body carries an API error object. */
+ * via _llm_ghost_clean_text with @single_line. Returns "" for no/empty choices;
+ * NULL + @error when the body carries an API error object. */
 char *_llm_ghost_openai_extract_completion     (JsonNode           *root,
                                                 LlmGhostOpenAIMode  mode,
+                                                gboolean            single_line,
                                                 GError            **error);
 
 /* Extract the incremental delta text from one streaming event @event. Returns
@@ -41,5 +44,10 @@ char *_llm_ghost_openai_extract_delta          (JsonNode           *event,
 /* Override the default streaming behavior (default: TRUE = stream when able). */
 void  _llm_ghost_openai_backend_set_stream     (LlmGhostOpenAIBackend *self,
                                                 gboolean               stream);
+
+/* When TRUE (default) the request sends "\n" as a stop token (single-line).
+ * Set FALSE for multi-line completions. */
+void  _llm_ghost_openai_backend_set_single_line (LlmGhostOpenAIBackend *self,
+                                                 gboolean               single_line);
 
 G_END_DECLS
