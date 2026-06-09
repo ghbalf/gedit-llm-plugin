@@ -8,8 +8,9 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE (LlmGhostOverlay, llm_ghost_overlay,
                       LLM_GHOST, OVERLAY, GtkLabel)
 
-GtkWidget *llm_ghost_overlay_new      (void);
-void       llm_ghost_overlay_set_text (LlmGhostOverlay *self,
-                                       const char      *text);
+GtkWidget *llm_ghost_overlay_new           (void);
+GtkWidget *llm_ghost_overlay_new_multiline (void);
+void       llm_ghost_overlay_set_text      (LlmGhostOverlay *self,
+                                            const char      *text);
 
 G_END_DECLS

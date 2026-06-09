@@ -29,7 +29,7 @@ parse_node (const char *json)
 static void
 test_fim_body (void)
 {
-  char *body = _llm_ghost_mistral_build_fim_body ("codestral-latest", "int main", "}", 64, 0.2);
+  char *body = _llm_ghost_mistral_build_fim_body ("codestral-latest", "int main", "}", 64, 0.2, TRUE);
   JsonObject *obj = parse_object (body);
 
   g_assert_cmpstr (json_object_get_string_member (obj, "model"),  ==, "codestral-latest");
@@ -109,6 +109,17 @@ test_extract_error_object (void)
   json_node_unref (node);
 }
 
+static void
+test_mistral_stop_single_line (void)
+{
+  char *on  = _llm_ghost_mistral_build_fim_body ("m", "p", "s", 64, 0.2, TRUE);
+  char *off = _llm_ghost_mistral_build_fim_body ("m", "p", "s", 64, 0.2, FALSE);
+  g_assert_nonnull (g_strstr_len (on,  -1, "\"stop\""));   /* single-line keeps stop */
+  g_assert_null    (g_strstr_len (off, -1, "\"stop\""));   /* multi-line omits it */
+  g_free (on);
+  g_free (off);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -119,5 +130,6 @@ main (int argc, char *argv[])
   g_test_add_func ("/mistral-body/extract-empty",    test_extract_empty_choices);
   g_test_add_func ("/mistral-body/extract-missing",  test_extract_missing_choices);
   g_test_add_func ("/mistral-body/extract-error",    test_extract_error_object);
+  g_test_add_func ("/mistral-body/stop-single-line", test_mistral_stop_single_line);
   return g_test_run ();
 }

@@ -6,6 +6,7 @@
 #include "llmghost-settings-internal.h"
 #include "llmghost-backend-factory.h"
 #include "llmghost-ollama-backend.h"
+#include "llmghost-ollama-backend-internal.h"
 #include "llmghost-openai-backend.h"
 #include "llmghost-mistral-backend.h"
 #include "llmghost-generic-backend.h"
@@ -176,6 +177,24 @@ test_parse_debounce_absent (void)
   LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{}");
   guint ms = 999;
   g_assert_false (llm_ghost_settings_get_debounce_ms (s, &ms));
+  g_object_unref (s);
+}
+
+static void
+test_parse_max_lines (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{\"max_lines\":5}");
+  guint n = 0;
+  g_assert_true (llm_ghost_settings_get_max_lines (s, &n));
+  g_assert_cmpuint (n, ==, 5);
+  g_object_unref (s);
+}
+
+static void
+test_parse_max_lines_absent (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{}");
+  g_assert_false (llm_ghost_settings_get_max_lines (s, NULL));
   g_object_unref (s);
 }
 
@@ -404,6 +423,37 @@ test_factory_missing_params_ok (void)
 }
 
 static void
+test_factory_single_line_from_max_lines (void)
+{
+  /* The factory derives single_line == (max_lines == 1) and pushes it to the
+   * active backend. Covered at the seam via the ollama (default) backend. */
+  LlmGhostSettings *s1 = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"ollama\",\"max_lines\":1}");
+  LlmGhostBackend *b1 = llm_ghost_backend_new_from_settings (s1);
+  g_assert_true (_llm_ghost_ollama_backend_get_single_line (
+                   LLM_GHOST_OLLAMA_BACKEND (b1)));
+  g_object_unref (b1);
+  g_object_unref (s1);
+
+  LlmGhostSettings *s8 = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"ollama\",\"max_lines\":8}");
+  LlmGhostBackend *b8 = llm_ghost_backend_new_from_settings (s8);
+  g_assert_false (_llm_ghost_ollama_backend_get_single_line (
+                    LLM_GHOST_OLLAMA_BACKEND (b8)));
+  g_object_unref (b8);
+  g_object_unref (s8);
+
+  /* Absent max_lines → factory default (8) → multi-line. */
+  LlmGhostSettings *sd = _llm_ghost_settings_new_from_string (
+    "{\"backend\":\"ollama\"}");
+  LlmGhostBackend *bd = llm_ghost_backend_new_from_settings (sd);
+  g_assert_false (_llm_ghost_ollama_backend_get_single_line (
+                    LLM_GHOST_OLLAMA_BACKEND (bd)));
+  g_object_unref (bd);
+  g_object_unref (sd);
+}
+
+static void
 test_factory_generic (void)
 {
   LlmGhostSettings *s = _llm_ghost_settings_new_from_string (
@@ -519,6 +569,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/parse/unknown-passthrough",    test_parse_unknown_backend_passthrough);
   g_test_add_func ("/settings/parse/debounce",               test_parse_debounce);
   g_test_add_func ("/settings/parse/debounce-absent",        test_parse_debounce_absent);
+  g_test_add_func ("/settings/parse/max-lines",              test_parse_max_lines);
+  g_test_add_func ("/settings/parse/max-lines-absent",       test_parse_max_lines_absent);
   g_test_add_func ("/settings/parse/params-interpolated",    test_parse_backend_params_interpolated);
   g_test_add_func ("/settings/parse/interpolate-in-arrays",  test_parse_interpolates_inside_arrays);
   g_test_add_func ("/settings/parse/underscore-ignored",     test_parse_underscore_key_ignored);
@@ -532,6 +584,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/factory/unknown",        test_factory_unknown_falls_back_to_ollama);
   g_test_add_func ("/settings/factory/missing-params", test_factory_missing_params_ok);
   g_test_add_func ("/settings/factory/generic",        test_factory_generic);
+  g_test_add_func ("/settings/factory/single-line-from-max-lines",
+                   test_factory_single_line_from_max_lines);
   g_test_add_func ("/settings/secret-refs/basic", test_collect_refs_basic);
   g_test_add_func ("/settings/secret-refs/none",  test_collect_refs_none);
   g_test_add_func ("/settings/secret-refs/null",  test_collect_refs_null);

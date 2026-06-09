@@ -21,4 +21,7 @@ LlmGhostBackend *llm_ghost_mistral_backend_new (const char *base_url,
                                                 const char *model,
                                                 const char *api_key);
 
+void llm_ghost_mistral_backend_set_single_line (LlmGhostMistralBackend *self,
+                                                gboolean                single_line);
+
 G_END_DECLS

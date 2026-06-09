@@ -129,13 +129,36 @@ llm_ghost_backend_new_from_settings (LlmGhostSettings *settings)
   const char *which = llm_ghost_settings_get_active_backend (settings);
   JsonObject *p = llm_ghost_settings_get_backend_params (settings, which);
 
+  guint max_lines = 8;
+  llm_ghost_settings_get_max_lines (settings, &max_lines);
+  gboolean single_line = (max_lines == 1);
+
+  LlmGhostBackend *b;
   if (g_strcmp0 (which, "openai") == 0)
-    return build_openai (p);
-  if (g_strcmp0 (which, "mistral") == 0)
-    return build_mistral (p);
-  if (g_strcmp0 (which, "generic") == 0)
-    return build_generic (p);
-  if (g_strcmp0 (which, "ollama") != 0)
-    g_warning ("unknown backend \"%s\"; using ollama", which);
-  return build_ollama (p);
+    {
+      b = build_openai (p);
+      _llm_ghost_openai_backend_set_single_line (LLM_GHOST_OPENAI_BACKEND (b),
+                                                 single_line);
+    }
+  else if (g_strcmp0 (which, "mistral") == 0)
+    {
+      b = build_mistral (p);
+      llm_ghost_mistral_backend_set_single_line (LLM_GHOST_MISTRAL_BACKEND (b),
+                                                 single_line);
+    }
+  else if (g_strcmp0 (which, "generic") == 0)
+    {
+      b = build_generic (p);
+      llm_ghost_generic_backend_set_single_line (LLM_GHOST_GENERIC_BACKEND (b),
+                                                 single_line);
+    }
+  else
+    {
+      if (g_strcmp0 (which, "ollama") != 0)
+        g_warning ("unknown backend \"%s\"; using ollama", which);
+      b = build_ollama (p);
+      llm_ghost_ollama_backend_set_single_line (LLM_GHOST_OLLAMA_BACKEND (b),
+                                                single_line);
+    }
+  return b;
 }

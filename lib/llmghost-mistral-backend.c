@@ -12,7 +12,8 @@ _llm_ghost_mistral_build_fim_body (const char *model,
                                    const char *prefix,
                                    const char *suffix,
                                    guint       max_tokens,
-                                   double      temperature)
+                                   double      temperature,
+                                   gboolean    single_line)
 {
   JsonBuilder *b = json_builder_new ();
   json_builder_begin_object (b);
@@ -27,10 +28,13 @@ _llm_ghost_mistral_build_fim_body (const char *model,
   json_builder_add_int_value (b, max_tokens);
   json_builder_set_member_name (b, "temperature");
   json_builder_add_double_value (b, temperature);
-  json_builder_set_member_name (b, "stop");
-  json_builder_begin_array (b);
-  json_builder_add_string_value (b, "\n");
-  json_builder_end_array (b);
+  if (single_line)
+    {
+      json_builder_set_member_name (b, "stop");
+      json_builder_begin_array (b);
+      json_builder_add_string_value (b, "\n");
+      json_builder_end_array (b);
+    }
 
   json_builder_end_object (b);
 
@@ -124,6 +128,7 @@ struct _LlmGhostMistralBackend
   char         *api_key;     /* NULL = no auth */
   guint         max_tokens;
   double        temperature;
+  gboolean      single_line;
 };
 
 static void llm_ghost_mistral_backend_iface_init (LlmGhostBackendInterface *iface);
@@ -185,7 +190,8 @@ mistral_request (LlmGhostBackend     *backend,
 
   char *url  = join_url (self->base_url, "fim/completions");
   char *body = _llm_ghost_mistral_build_fim_body (self->model, prefix, suffix,
-                                                  self->max_tokens, self->temperature);
+                                                  self->max_tokens, self->temperature,
+                                                  self->single_line);
 
   _llm_ghost_http_post_json_async (self->session, url, self->api_key, body,
                                    cancellable, on_http_done, task);
@@ -204,6 +210,16 @@ llm_ghost_mistral_backend_iface_init (LlmGhostBackendInterface *iface)
 {
   iface->request        = mistral_request;
   iface->request_finish = mistral_request_finish;
+}
+
+/* ---- Public API ---------------------------------------------------------- */
+
+void
+llm_ghost_mistral_backend_set_single_line (LlmGhostMistralBackend *self,
+                                           gboolean                single_line)
+{
+  g_return_if_fail (LLM_GHOST_IS_MISTRAL_BACKEND (self));
+  self->single_line = single_line;
 }
 
 /* ---- GObject lifecycle -------------------------------------------------- */
@@ -232,6 +248,7 @@ llm_ghost_mistral_backend_init (LlmGhostMistralBackend *self)
   soup_session_set_timeout (self->session, REQUEST_TIMEOUT_SEC);
   self->max_tokens  = DEFAULT_MAX_TOKENS;
   self->temperature = DEFAULT_TEMPERATURE;
+  self->single_line = TRUE;
 }
 
 /* ---- construction ------------------------------------------------------- */

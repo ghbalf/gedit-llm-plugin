@@ -15,11 +15,14 @@ struct _LlmGhostController
   GtkTextView         *view;       /* weak — nulled by g_object_add_weak_pointer */
   LlmGhostBackend     *backend;    /* strong */
   LlmGhostOverlay     *overlay;    /* strong; child of view's text window when added */
+  LlmGhostOverlay     *overlay_block; /* strong; multi-line continuation, child of view */
+  GtkTextTag          *spacer_tag;    /* owned by the buffer's tag table; opens the gap */
   GCancellable        *cancellable;/* strong; current in-flight, or NULL */
 
   char                *current_ghost; /* the suggestion text currently displayed */
 
   guint                debounce_ms;
+  guint                max_lines;
   guint                debounce_id;     /* GSource id of pending debounce, 0 if none */
 
   gulong               h_buffer_changed;
@@ -35,6 +38,7 @@ struct _LlmGhostController
   GtkAdjustment       *connected_hadj;
 
   guint                overlay_added : 1;
+  guint                overlay_block_added : 1;
   guint                overlay_visible : 1;
   guint                inserting_acceptance : 1;
 };
@@ -52,10 +56,10 @@ static gboolean on_debounce_fire          (gpointer user_data);
 static void     on_completion_ready       (GObject *source, GAsyncResult *result, gpointer user_data);
 static void     on_partial_data           (LlmGhostBackend *backend, const char *text, gpointer user_data);
 static void     restart_request           (LlmGhostController *self);
-static char *   sanitize_ghost_text       (char *text);
 static void     show_ghost_at_cursor      (LlmGhostController *self);
 static void     reposition_ghost          (LlmGhostController *self);
 static void     hide_ghost                (LlmGhostController *self);
+static void     clear_spacer              (LlmGhostController *self);
 static void     accept_ghost              (LlmGhostController *self);
 static void     accept_ghost_prefix       (LlmGhostController *self, gsize n_bytes);
 static void     cancel_in_flight          (LlmGhostController *self);
@@ -68,8 +72,11 @@ static void
 llm_ghost_controller_init (LlmGhostController *self)
 {
   self->debounce_ms = DEFAULT_DEBOUNCE_MS;
+  self->max_lines   = 8;   /* multi-line cap */
   self->overlay = LLM_GHOST_OVERLAY (llm_ghost_overlay_new ());
   g_object_ref_sink (self->overlay);
+  self->overlay_block = LLM_GHOST_OVERLAY (llm_ghost_overlay_new_multiline ());
+  g_object_ref_sink (self->overlay_block);
 }
 
 static void
@@ -88,6 +95,7 @@ llm_ghost_controller_dispose (GObject *object)
     }
   g_clear_object (&self->backend);
   g_clear_object (&self->overlay);
+  g_clear_object (&self->overlay_block);
 
   G_OBJECT_CLASS (llm_ghost_controller_parent_class)->dispose (object);
 }
@@ -121,6 +129,8 @@ attach_to_view (LlmGhostController *self,
 
   GtkTextBuffer *buffer = gtk_text_view_get_buffer (view);
   self->connected_buffer = buffer;
+  self->spacer_tag = gtk_text_buffer_create_tag (buffer, NULL,
+                                                 "pixels-below-lines", 0, NULL);
   self->h_buffer_changed = g_signal_connect (buffer, "changed",
                                              G_CALLBACK (on_buffer_changed), self);
   self->h_buffer_cursor  = g_signal_connect (buffer, "notify::cursor-position",
@@ -154,6 +164,11 @@ attach_to_view (LlmGhostController *self,
 static void
 detach_from_view (LlmGhostController *self)
 {
+  /* Remove any applied spacer gap while connected_buffer/spacer_tag are still
+   * valid — the block below nulls them, after which clear_spacer is a no-op and
+   * the opened gap would outlive the ghost. */
+  clear_spacer (self);
+
   if (self->connected_buffer != NULL)
     {
       if (self->h_buffer_changed != 0)
@@ -162,6 +177,7 @@ detach_from_view (LlmGhostController *self)
         g_signal_handler_disconnect (self->connected_buffer, self->h_buffer_cursor);
       self->h_buffer_changed = 0;
       self->h_buffer_cursor  = 0;
+      self->spacer_tag = NULL;
       self->connected_buffer = NULL;
     }
 
@@ -197,6 +213,13 @@ detach_from_view (LlmGhostController *self)
           self->overlay_visible = FALSE;
         }
 
+      if (self->overlay_block_added)
+        {
+          gtk_container_remove (GTK_CONTAINER (self->view),
+                                GTK_WIDGET (self->overlay_block));
+          self->overlay_block_added = FALSE;
+        }
+
       g_object_remove_weak_pointer (G_OBJECT (self->view),
                                     (gpointer *) &self->view);
       self->view = NULL;
@@ -224,6 +247,13 @@ llm_ghost_controller_set_debounce_ms (LlmGhostController *self, guint ms)
 {
   g_return_if_fail (LLM_GHOST_IS_CONTROLLER (self));
   self->debounce_ms = ms;
+}
+
+void
+llm_ghost_controller_set_max_lines (LlmGhostController *self, guint max_lines)
+{
+  g_return_if_fail (LLM_GHOST_IS_CONTROLLER (self));
+  self->max_lines = max_lines > 0 ? max_lines : 1;
 }
 
 /* ---- request flow -------------------------------------------------------- */
@@ -429,7 +459,9 @@ on_completion_ready (GObject *source, GAsyncResult *result, gpointer user_data)
       goto out;
     }
 
-  text = sanitize_ghost_text (text);  /* consumes text */
+  char *clamped = _llm_ghost_controller_clamp_ghost_text (text, self->max_lines);
+  g_free (text);
+  text = clamped;
   if (text == NULL)
     goto out;
 
@@ -442,31 +474,56 @@ out:
   g_object_unref (self);
 }
 
-/* Phase 2: ghost is a single-line GtkLabel overlay. Truncate @text at the
- * first newline so display and Tab-accept agree (multi-line is phase 3), and
- * right-trim trailing whitespace — FIM models routinely emit it before the
- * stop token, which would render as cursor-on-space after accept. Leading
- * whitespace is preserved (meaningful indentation). Takes ownership of @text;
- * returns the same buffer truncated in place, or NULL (freeing @text) when
- * nothing meaningful remains. */
-static char *
-sanitize_ghost_text (char *text)
+/* Phase 4: clamp @text to at most @max_lines lines, then right-trim trailing
+ * whitespace and blank lines (FIM models emit trailing whitespace; trailing
+ * blank lines would open empty gap rows). Leading whitespace is preserved
+ * (meaningful indentation). Returns a newly-allocated string, or NULL when
+ * nothing meaningful remains. This is the single source of truth: current_ghost
+ * holds exactly this string, so the displayed ghost and what accept inserts
+ * always agree. */
+char *
+_llm_ghost_controller_clamp_ghost_text (const char *text, guint max_lines)
 {
-  char *nl = strchr (text, '\n');
-  if (nl != NULL)
-    *nl = '\0';
+  if (text == NULL)
+    return NULL;
+  if (max_lines == 0)
+    max_lines = 1;
 
-  for (char *end = text + strlen (text);
-       end > text && g_ascii_isspace ((unsigned char) end[-1]);
+  char *copy = g_strdup (text);
+
+  /* Cut after the max_lines-th line: find the max_lines-th '\n'. */
+  guint nl = 0;
+  for (char *q = copy; *q != '\0'; q++)
+    if (*q == '\n' && ++nl == max_lines)
+      {
+        *q = '\0';
+        break;
+      }
+
+  /* Right-trim trailing whitespace (removes trailing blank lines + spaces). */
+  for (char *end = copy + strlen (copy);
+       end > copy && g_ascii_isspace ((unsigned char) end[-1]);
        end--)
     end[-1] = '\0';
 
-  if (*text == '\0')
+  if (*copy == '\0')
     {
-      g_free (text);
+      g_free (copy);
       return NULL;
     }
-  return text;
+  return copy;
+}
+
+guint
+_llm_ghost_controller_count_lines (const char *text)
+{
+  if (text == NULL || *text == '\0')
+    return 0;
+  guint n = 1;
+  for (const char *p = text; *p != '\0'; p++)
+    if (*p == '\n')
+      n++;
+  return n;
 }
 
 static void
@@ -484,9 +541,9 @@ on_partial_data (LlmGhostBackend *backend, const char *text, gpointer user_data)
   if (!cursor_safe_for_ghost (self->view))
     return;
 
-  /* Same single-line sanitisation as the final result, so the displayed ghost
-   * and what Tab-accept inserts agree even mid-stream. */
-  char *clean = sanitize_ghost_text (g_strdup (text));
+  /* Same clamp as the final result, so the displayed ghost and what accept
+   * inserts agree even mid-stream. */
+  char *clean = _llm_ghost_controller_clamp_ghost_text (text, self->max_lines);
   if (clean == NULL)
     return;
 
@@ -534,8 +591,17 @@ show_ghost_at_cursor (LlmGhostController *self)
   GdkRectangle cursor_rect;
   gtk_text_view_get_cursor_locations (self->view, &cursor_iter, &cursor_rect, NULL);
 
-  llm_ghost_overlay_set_text (self->overlay, self->current_ghost);
+  /* Split current_ghost into the inline first line and the continuation block. */
+  const char *nl = strchr (self->current_ghost, '\n');
+  char *first = nl ? g_strndup (self->current_ghost,
+                                (gsize) (nl - self->current_ghost))
+                   : g_strdup (self->current_ghost);
+  const char *rest = nl ? nl + 1 : "";
 
+  llm_ghost_overlay_set_text (self->overlay, first);
+  g_free (first);
+
+  /* Inline first line at the cursor (buffer coords; no window conversion). */
   if (!self->overlay_added)
     {
       gtk_text_view_add_child_in_window (self->view,
@@ -549,8 +615,53 @@ show_ghost_at_cursor (LlmGhostController *self)
       gtk_text_view_move_child (self->view, GTK_WIDGET (self->overlay),
                                 cursor_rect.x, line_y);
     }
-
   gtk_widget_show (GTK_WIDGET (self->overlay));
+
+  /* Continuation block: open a gap below the cursor line and float the block
+   * label into it at column 0. */
+  clear_spacer (self);
+  if (*rest != '\0')
+    {
+      guint n_cont = _llm_ghost_controller_count_lines (self->current_ghost) - 1;
+
+      if (self->spacer_tag != NULL)
+        {
+          g_object_set (self->spacer_tag,
+                        "pixels-below-lines", (gint) (n_cont * line_h), NULL);
+          GtkTextIter ls = cursor_iter, le = cursor_iter;
+          gtk_text_iter_set_line_offset (&ls, 0);
+          if (!gtk_text_iter_ends_line (&le))
+            gtk_text_iter_forward_to_line_end (&le);
+          gtk_text_buffer_apply_tag (buffer, self->spacer_tag, &ls, &le);
+        }
+
+      /* x of column 0 on the cursor line. */
+      GtkTextIter line_start = cursor_iter;
+      gtk_text_iter_set_line_offset (&line_start, 0);
+      GdkRectangle ls_rect;
+      gtk_text_view_get_iter_location (self->view, &line_start, &ls_rect);
+
+      llm_ghost_overlay_set_text (self->overlay_block, rest);
+      if (!self->overlay_block_added)
+        {
+          gtk_text_view_add_child_in_window (self->view,
+                                             GTK_WIDGET (self->overlay_block),
+                                             GTK_TEXT_WINDOW_TEXT,
+                                             ls_rect.x, line_y + line_h);
+          self->overlay_block_added = TRUE;
+        }
+      else
+        {
+          gtk_text_view_move_child (self->view, GTK_WIDGET (self->overlay_block),
+                                    ls_rect.x, line_y + line_h);
+        }
+      gtk_widget_show (GTK_WIDGET (self->overlay_block));
+    }
+  else if (self->overlay_block_added)
+    {
+      gtk_widget_hide (GTK_WIDGET (self->overlay_block));
+    }
+
   self->overlay_visible = TRUE;
 }
 
@@ -573,12 +684,37 @@ reposition_ghost (LlmGhostController *self)
 
   gtk_text_view_move_child (self->view, GTK_WIDGET (self->overlay),
                             cursor_rect.x, line_y);
+
+  if (self->overlay_block_added &&
+      gtk_widget_get_visible (GTK_WIDGET (self->overlay_block)))
+    {
+      GtkTextIter line_start = cursor_iter;
+      gtk_text_iter_set_line_offset (&line_start, 0);
+      GdkRectangle ls_rect;
+      gtk_text_view_get_iter_location (self->view, &line_start, &ls_rect);
+      gtk_text_view_move_child (self->view, GTK_WIDGET (self->overlay_block),
+                                ls_rect.x, line_y + line_h);
+    }
+}
+
+/* Remove the spacer tag everywhere so no opened gap outlives the ghost. */
+static void
+clear_spacer (LlmGhostController *self)
+{
+  if (self->connected_buffer == NULL || self->spacer_tag == NULL)
+    return;
+  GtkTextIter s, e;
+  gtk_text_buffer_get_bounds (self->connected_buffer, &s, &e);
+  gtk_text_buffer_remove_tag (self->connected_buffer, self->spacer_tag, &s, &e);
 }
 
 static void
 hide_ghost (LlmGhostController *self)
 {
   g_clear_pointer (&self->current_ghost, g_free);
+  clear_spacer (self);
+  if (self->overlay_block_added)
+    gtk_widget_hide (GTK_WIDGET (self->overlay_block));
   if (self->overlay_visible)
     {
       gtk_widget_hide (GTK_WIDGET (self->overlay));

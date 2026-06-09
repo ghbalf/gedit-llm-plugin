@@ -76,8 +76,11 @@ find_ghost_overlay (Fixture *f)
 {
   GList *children = gtk_container_get_children (GTK_CONTAINER (f->view));
   LlmGhostOverlay *found = NULL;
+  /* The inline first-line overlay is the single-line-mode one; the block
+   * (multi-line) overlay must not be confused for it. */
   for (GList *l = children; l != NULL; l = l->next)
-    if (LLM_GHOST_IS_OVERLAY (l->data))
+    if (LLM_GHOST_IS_OVERLAY (l->data) &&
+        gtk_label_get_single_line_mode (GTK_LABEL (l->data)))
       {
         found = l->data;
         break;
@@ -100,6 +103,58 @@ ghost_text (Fixture *f)
   if (o == NULL)
     return g_strdup ("");
   return g_strdup (gtk_label_get_text (GTK_LABEL (o)));
+}
+
+static char *
+block_text (Fixture *f)
+{
+  GList *children = gtk_container_get_children (GTK_CONTAINER (f->view));
+  char *out = g_strdup ("");
+  guint seen = 0;
+  for (GList *l = children; l != NULL; l = l->next)
+    if (LLM_GHOST_IS_OVERLAY (l->data))
+      {
+        /* Two overlays may be present: inline (single-line) and block
+         * (multi-line). The block is the one whose label text contains a
+         * newline, or — when the block is a single continuation line — the
+         * one that is NOT single-line-mode. Identify by single-line-mode. */
+        if (!gtk_label_get_single_line_mode (GTK_LABEL (l->data)))
+          {
+            g_free (out);
+            out = g_strdup (gtk_label_get_text (GTK_LABEL (l->data)));
+            seen++;
+          }
+      }
+  g_list_free (children);
+  /* At most one block overlay should ever exist; duplicates would mean the
+   * teardown/recreate path leaked a previous block widget. */
+  g_assert_cmpuint (seen, <=, 1);
+  return out;
+}
+
+/* TRUE if some text tag opens a vertical gap (pixels-below-lines > 0) at the
+ * start of the line containing the cursor — i.e. the spacer gap is applied. */
+static gboolean
+cursor_line_has_gap (GtkTextBuffer *buffer)
+{
+  GtkTextIter it;
+  gtk_text_buffer_get_iter_at_mark (buffer, &it,
+                                    gtk_text_buffer_get_insert (buffer));
+  gtk_text_iter_set_line_offset (&it, 0);
+  gboolean gap = FALSE;
+  GSList *tags = gtk_text_iter_get_tags (&it);
+  for (GSList *l = tags; l != NULL; l = l->next)
+    {
+      gint below = 0;
+      g_object_get (l->data, "pixels-below-lines", &below, NULL);
+      if (below > 0)
+        {
+          gap = TRUE;
+          break;
+        }
+    }
+  g_slist_free (tags);
+  return gap;
 }
 
 static gboolean
@@ -378,11 +433,9 @@ test_partial_gated_when_idle (void)
   fixture_free (f);
 }
 
-/* Regression: a multi-line partial must be truncated at the first newline
- * before it lands in current_ghost, so Tab-accept inserts only the first line
- * (matching the single-line overlay display) rather than the raw payload. */
+/* A multi-line partial now renders as a block and accepts in full. */
 static void
-test_partial_accept_single_line (void)
+test_partial_accept_multi_line (void)
 {
   Fixture *f = fixture_new ();
   gtk_text_buffer_insert_at_cursor (buf (f), "f", -1);
@@ -393,9 +446,87 @@ test_partial_accept_single_line (void)
 
   g_assert_true (send_key (f, GDK_KEY_Tab));
   char *text = buffer_text (f);
-  g_assert_cmpstr (text, ==, "fline1");
+  g_assert_cmpstr (text, ==, "fline1\nline2");
   g_free (text);
   fixture_free (f);
+}
+
+static void
+test_multiline_splits_inline_and_block (void)
+{
+  Fixture *f = fixture_new ();
+  gtk_text_buffer_insert_at_cursor (buf (f), "f", -1);
+  pump (SETTLE_MS);
+  mock_backend_emit_partial (MOCK_BACKEND (f->backend), "foo(\n    bar,\n    baz");
+  pump (SETTLE_MS);
+
+  g_assert_true (ghost_visible (f));
+  char *inline_t = ghost_text (f);
+  g_assert_cmpstr (inline_t, ==, "foo(");          /* first line inline */
+  g_free (inline_t);
+
+  char *blk = block_text (f);
+  g_assert_cmpstr (blk, ==, "    bar,\n    baz");   /* lines 2..N in the block */
+  g_free (blk);
+  fixture_free (f);
+}
+
+static void
+test_multiline_cap (void)
+{
+  Fixture *f = fixture_new ();
+  gtk_text_buffer_insert_at_cursor (buf (f), "f", -1);
+  pump (SETTLE_MS);
+  /* 10 lines, cap is 8 → accept inserts exactly 8 (first line "L1" continues
+   * the buffer's "f"). */
+  mock_backend_emit_partial (MOCK_BACKEND (f->backend),
+                             "L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10");
+  pump (SETTLE_MS);
+  g_assert_true (send_key (f, GDK_KEY_Tab));
+  char *text = buffer_text (f);
+  g_assert_cmpstr (text, ==, "fL1\nL2\nL3\nL4\nL5\nL6\nL7\nL8");
+  g_free (text);
+  fixture_free (f);
+}
+
+/* Detaching the controller while a multi-line ghost is visible must remove the
+ * spacer gap from the surviving buffer — otherwise a blank gap is left behind
+ * (the plugin recreates the controller per-view on settings reload). */
+static void
+test_detach_clears_spacer (void)
+{
+  Fixture *f = fixture_new ();
+  gtk_text_buffer_insert_at_cursor (buf (f), "f", -1);
+  pump (SETTLE_MS);
+  mock_backend_emit_partial (MOCK_BACKEND (f->backend), "line1\nline2");
+  pump (SETTLE_MS);
+
+  /* Keep the buffer alive past view destruction. */
+  GtkTextBuffer *buffer = g_object_ref (buf (f));
+
+  /* Precondition: the multi-line spacer gap is actually applied right now. */
+  g_assert_true (cursor_line_has_gap (buffer));
+
+  /* Destroying the view (Option B) fires on_view_destroy → detach_from_view
+   * without going through hide_ghost. We use this rather than disposing the
+   * controller because an in-flight request still holds a ref on the
+   * controller (the mock emitted a partial, not a completion), so unref'ing
+   * the controller would not dispose it. The view owns no extra controller
+   * ref, so its destroy reliably drives the detach path under test. */
+  gtk_widget_destroy (GTK_WIDGET (f->view));
+
+  g_assert_false (cursor_line_has_gap (buffer));
+
+  /* Teardown: controller/backend/window are still alive. fixture_free is safe
+   * here (it does not touch the now-destroyed view directly), but the view
+   * pointer is dangling, so tear down explicitly instead. */
+  g_object_unref (buffer);
+  g_object_unref (f->controller);
+  g_object_unref (f->backend);
+  gtk_widget_destroy (f->window);
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+  g_free (f);
 }
 
 int
@@ -413,6 +544,9 @@ main (int argc, char *argv[])
   g_test_add_func ("/controller/sanity-coords",        test_sanity_coords_after_scroll);
   g_test_add_func ("/controller/partial-incremental", test_partial_renders_incrementally);
   g_test_add_func ("/controller/partial-gated-idle",  test_partial_gated_when_idle);
-  g_test_add_func ("/controller/partial-accept-single-line", test_partial_accept_single_line);
+  g_test_add_func ("/controller/partial-accept-multi-line", test_partial_accept_multi_line);
+  g_test_add_func ("/controller/multiline-split", test_multiline_splits_inline_and_block);
+  g_test_add_func ("/controller/multiline-cap",   test_multiline_cap);
+  g_test_add_func ("/controller/detach-clears-spacer", test_detach_clears_spacer);
   return g_test_run ();
 }

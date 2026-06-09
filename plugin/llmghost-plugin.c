@@ -58,6 +58,10 @@ attach_controller (LlmghostPlugin *self, GeditView *view)
   if (llm_ghost_settings_get_debounce_ms (self->settings, &ms))
     llm_ghost_controller_set_debounce_ms (ctrl, ms);
 
+  guint mlines;
+  if (llm_ghost_settings_get_max_lines (self->settings, &mlines))
+    llm_ghost_controller_set_max_lines (ctrl, mlines);
+
   /* Lifetime tied to the view: when the view is destroyed (tab close,
    * window close), the destroy notify drops the last ref on the
    * controller, which disconnects its signal handlers in finalize. */

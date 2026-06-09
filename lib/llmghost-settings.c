@@ -14,6 +14,7 @@ static const char DEFAULT_SETTINGS_JSON[] =
   "  \"_help\": \"Edit this file in gedit; completions reload automatically. ${VARS} expand from the environment.\",\n"
   "  \"backend\": \"ollama\",\n"
   "  \"debounce_ms\": 80,\n"
+  "  \"max_lines\": 8,\n"
   "  \"backends\": {\n"
   "    \"ollama\":  { \"host\": \"spark-2448\", \"port\": 11434,\n"
   "                 \"model\": \"qwen3-coder-next:latest\", \"tokens\": \"Qwen\" },\n"
@@ -322,6 +323,28 @@ llm_ghost_settings_get_debounce_ms (LlmGhostSettings *self, guint *out_ms)
             {
               if (out_ms != NULL)
                 *out_ms = (guint) v;
+              return TRUE;
+            }
+        }
+    }
+  return FALSE;
+}
+
+gboolean
+llm_ghost_settings_get_max_lines (LlmGhostSettings *self, guint *out)
+{
+  JsonNode *n = json_object_get_member (self->root, "max_lines");
+  if (n != NULL && JSON_NODE_HOLDS_VALUE (n))
+    {
+      GType t = json_node_get_value_type (n);
+      if (t == G_TYPE_INT64 || t == G_TYPE_DOUBLE)
+        {
+          gint64 v = (t == G_TYPE_DOUBLE) ? (gint64) json_node_get_double (n)
+                                          : json_node_get_int (n);
+          if (v > 0)
+            {
+              if (out != NULL)
+                *out = (guint) v;
               return TRUE;
             }
         }

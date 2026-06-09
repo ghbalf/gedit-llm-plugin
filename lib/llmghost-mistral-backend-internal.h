@@ -12,7 +12,8 @@ char *_llm_ghost_mistral_build_fim_body    (const char *model,
                                             const char *prefix,
                                             const char *suffix,
                                             guint       max_tokens,
-                                            double      temperature);
+                                            double      temperature,
+                                            gboolean    single_line);
 
 /* Pull the completion from a parsed Codestral FIM response @root: prefer
  * choices[0].message.content, fall back to choices[0].text. Returns "" for

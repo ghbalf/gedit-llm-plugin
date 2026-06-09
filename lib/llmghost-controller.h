@@ -29,4 +29,7 @@ LlmGhostController *llm_ghost_controller_new (GtkTextView     *view,
 void llm_ghost_controller_set_debounce_ms (LlmGhostController *self,
                                            guint               ms);
 
+void llm_ghost_controller_set_max_lines (LlmGhostController *self,
+                                         guint               max_lines);
+
 G_END_DECLS

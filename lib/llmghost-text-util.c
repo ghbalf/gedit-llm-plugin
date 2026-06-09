@@ -5,7 +5,7 @@
 #include <string.h>
 
 char *
-_llm_ghost_clean_single_line (const char *raw)
+_llm_ghost_clean_text (const char *raw, gboolean single_line)
 {
   if (raw == NULL)
     return g_strdup ("");
@@ -28,13 +28,27 @@ _llm_ghost_clean_single_line (const char *raw)
         }
     }
 
-  const char *nl2 = strchr (unfenced, '\n');
-  char *result = nl2 != NULL
-                   ? g_strndup (unfenced, (gsize) (nl2 - unfenced))
-                   : g_strdup (unfenced);
+  char *result;
+  if (single_line)
+    {
+      const char *nl2 = strchr (unfenced, '\n');
+      result = nl2 != NULL
+                 ? g_strndup (unfenced, (gsize) (nl2 - unfenced))
+                 : g_strdup (unfenced);
+    }
+  else
+    {
+      result = g_strdup (unfenced);
+    }
 
   if (unfenced != trimmed)
     g_free (unfenced);
   g_free (trimmed);
   return result;
+}
+
+char *
+_llm_ghost_clean_single_line (const char *raw)
+{
+  return _llm_ghost_clean_text (raw, TRUE);
 }

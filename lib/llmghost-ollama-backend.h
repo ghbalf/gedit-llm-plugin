@@ -34,4 +34,7 @@ LlmGhostBackend *llm_ghost_ollama_backend_new (const char *host,
 void llm_ghost_ollama_backend_set_fim_tokens (LlmGhostOllamaBackend   *self,
                                               const LlmGhostFimTokens *tokens);
 
+void llm_ghost_ollama_backend_set_single_line (LlmGhostOllamaBackend *self,
+                                               gboolean               single_line);
+
 G_END_DECLS

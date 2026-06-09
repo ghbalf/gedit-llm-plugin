@@ -34,6 +34,11 @@ const char *llm_ghost_settings_get_active_backend (LlmGhostSettings *self);
 gboolean llm_ghost_settings_get_debounce_ms (LlmGhostSettings *self,
                                              guint            *out_ms);
 
+/* Optional ghost line cap. Returns TRUE and writes *out when the config sets a
+ * positive integer "max_lines"; returns FALSE when absent. */
+gboolean llm_ghost_settings_get_max_lines (LlmGhostSettings *self,
+                                           guint            *out);
+
 /* The interpolated params object for backend @name (under "backends"), or
  * %NULL when absent. Owned by @self, valid until the next reload. */
 JsonObject *llm_ghost_settings_get_backend_params (LlmGhostSettings *self,

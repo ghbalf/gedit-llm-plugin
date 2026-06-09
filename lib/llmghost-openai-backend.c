@@ -42,7 +42,8 @@ _llm_ghost_openai_build_completions_body (const char *model,
                                           const char *suffix,
                                           guint       max_tokens,
                                           double      temperature,
-                                          gboolean    stream)
+                                          gboolean    stream,
+                                          gboolean    single_line)
 {
   JsonBuilder *b = json_builder_new ();
   json_builder_begin_object (b);
@@ -57,7 +58,8 @@ _llm_ghost_openai_build_completions_body (const char *model,
   json_builder_add_int_value (b, max_tokens);
   json_builder_set_member_name (b, "temperature");
   json_builder_add_double_value (b, temperature);
-  add_stop_newline (b);
+  if (single_line)
+    add_stop_newline (b);
   json_builder_set_member_name (b, "stream");
   json_builder_add_boolean_value (b, stream);
 
@@ -82,7 +84,8 @@ _llm_ghost_openai_build_chat_body (const char *model,
                                    const char *suffix,
                                    guint       max_tokens,
                                    double      temperature,
-                                   gboolean    stream)
+                                   gboolean    stream,
+                                   gboolean    single_line)
 {
   char *user = g_strdup_printf ("<PREFIX>%s</PREFIX>\n<SUFFIX>%s</SUFFIX>",
                                 prefix ? prefix : "", suffix ? suffix : "");
@@ -103,7 +106,8 @@ _llm_ghost_openai_build_chat_body (const char *model,
   json_builder_add_int_value (b, max_tokens);
   json_builder_set_member_name (b, "temperature");
   json_builder_add_double_value (b, temperature);
-  add_stop_newline (b);
+  if (single_line)
+    add_stop_newline (b);
   json_builder_set_member_name (b, "stream");
   json_builder_add_boolean_value (b, stream);
 
@@ -117,6 +121,7 @@ _llm_ghost_openai_build_chat_body (const char *model,
 char *
 _llm_ghost_openai_extract_completion (JsonNode           *root,
                                       LlmGhostOpenAIMode  mode,
+                                      gboolean            single_line,
                                       GError            **error)
 {
   if (root == NULL || !JSON_NODE_HOLDS_OBJECT (root))
@@ -171,7 +176,7 @@ _llm_ghost_openai_extract_completion (JsonNode           *root,
       if (m != NULL && json_object_has_member (m, "content"))
         content = json_object_get_string_member (m, "content");
     }
-  return _llm_ghost_clean_single_line (content);
+  return _llm_ghost_clean_text (content, single_line);
 }
 
 char *
@@ -262,6 +267,7 @@ struct _LlmGhostOpenAIBackend
   char               *api_key;     /* NULL = no auth */
   LlmGhostOpenAIMode  mode;
   gboolean            stream;
+  gboolean            single_line;
   guint               max_tokens;
   double              temperature;
 };
@@ -299,7 +305,8 @@ on_http_done (GObject *source, GAsyncResult *result, gpointer user_data)
       return;
     }
 
-  char *out = _llm_ghost_openai_extract_completion (root, mode, &error);
+  LlmGhostOpenAIBackend *self = LLM_GHOST_OPENAI_BACKEND (g_task_get_source_object (task));
+  char *out = _llm_ghost_openai_extract_completion (root, mode, self->single_line, &error);
   json_node_unref (root);
 
   if (out == NULL)
@@ -316,6 +323,7 @@ on_http_done (GObject *source, GAsyncResult *result, gpointer user_data)
 typedef struct {
   LlmGhostOpenAIBackend *self;   /* borrowed; outer task holds a ref */
   LlmGhostOpenAIMode     mode;
+  gboolean               single_line;
   GString               *acc;
   GError                *evt_error;
 } OpenAIStreamCtx;
@@ -353,7 +361,7 @@ openai_on_event (const char *payload, gpointer user_data)
   if (*delta != '\0')
     {
       g_string_append (ctx->acc, delta);
-      char *clean = _llm_ghost_clean_single_line (ctx->acc->str);
+      char *clean = _llm_ghost_clean_text (ctx->acc->str, ctx->single_line);
       _llm_ghost_backend_emit_partial_data (LLM_GHOST_BACKEND (ctx->self), clean);
       g_free (clean);
     }
@@ -382,7 +390,7 @@ openai_on_stream_done (GObject *source, GAsyncResult *result, gpointer user_data
     }
 
   char *out = (ctx->mode == LLM_GHOST_OPENAI_MODE_CHAT)
-                ? _llm_ghost_clean_single_line (ctx->acc->str)
+                ? _llm_ghost_clean_text (ctx->acc->str, ctx->single_line)
                 : g_strdup (ctx->acc->str);
   g_task_return_pointer (outer, out, g_free);
   g_object_unref (outer);
@@ -406,14 +414,17 @@ openai_request (LlmGhostBackend     *backend,
       OpenAIStreamCtx *ctx = g_new0 (OpenAIStreamCtx, 1);
       ctx->self = self;
       ctx->mode = self->mode;
+      ctx->single_line = self->single_line;
       ctx->acc  = g_string_new (NULL);
       g_task_set_task_data (task, ctx, openai_stream_ctx_free);
 
       char *body = comp
         ? _llm_ghost_openai_build_completions_body (self->model, prefix, suffix,
-                                                    self->max_tokens, self->temperature, TRUE)
+                                                    self->max_tokens, self->temperature, TRUE,
+                                                    self->single_line)
         : _llm_ghost_openai_build_chat_body (self->model, prefix, suffix,
-                                             self->max_tokens, self->temperature, TRUE);
+                                             self->max_tokens, self->temperature, TRUE,
+                                             self->single_line);
 
       JsonObject *headers = NULL;
       if (self->api_key != NULL && *self->api_key != '\0')
@@ -438,9 +449,11 @@ openai_request (LlmGhostBackend     *backend,
   g_task_set_task_data (task, GINT_TO_POINTER (self->mode), NULL);
   char *body = comp
     ? _llm_ghost_openai_build_completions_body (self->model, prefix, suffix,
-                                                self->max_tokens, self->temperature, FALSE)
+                                                self->max_tokens, self->temperature, FALSE,
+                                                self->single_line)
     : _llm_ghost_openai_build_chat_body (self->model, prefix, suffix,
-                                         self->max_tokens, self->temperature, FALSE);
+                                         self->max_tokens, self->temperature, FALSE,
+                                         self->single_line);
   _llm_ghost_http_post_json_async (self->session, url, self->api_key, body,
                                    cancellable, on_http_done, task);
   g_free (url);
@@ -484,10 +497,11 @@ llm_ghost_openai_backend_init (LlmGhostOpenAIBackend *self)
 {
   self->session     = soup_session_new ();
   soup_session_set_timeout (self->session, REQUEST_TIMEOUT_SEC);
-  self->max_tokens  = DEFAULT_MAX_TOKENS;
-  self->temperature = DEFAULT_TEMPERATURE;
-  self->mode        = LLM_GHOST_OPENAI_MODE_CHAT;
-  self->stream      = TRUE;
+  self->max_tokens   = DEFAULT_MAX_TOKENS;
+  self->temperature  = DEFAULT_TEMPERATURE;
+  self->mode         = LLM_GHOST_OPENAI_MODE_CHAT;
+  self->stream       = TRUE;
+  self->single_line  = TRUE;
 }
 
 /* ---- construction ------------------------------------------------------- */
@@ -549,4 +563,12 @@ _llm_ghost_openai_backend_set_stream (LlmGhostOpenAIBackend *self, gboolean stre
 {
   g_return_if_fail (LLM_GHOST_IS_OPENAI_BACKEND (self));
   self->stream = stream;
+}
+
+void
+_llm_ghost_openai_backend_set_single_line (LlmGhostOpenAIBackend *self,
+                                           gboolean               single_line)
+{
+  g_return_if_fail (LLM_GHOST_IS_OPENAI_BACKEND (self));
+  self->single_line = single_line;
 }
