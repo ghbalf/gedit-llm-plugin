@@ -180,6 +180,24 @@ test_parse_debounce_absent (void)
 }
 
 static void
+test_parse_max_lines (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{\"max_lines\":5}");
+  guint n = 0;
+  g_assert_true (llm_ghost_settings_get_max_lines (s, &n));
+  g_assert_cmpuint (n, ==, 5);
+  g_object_unref (s);
+}
+
+static void
+test_parse_max_lines_absent (void)
+{
+  LlmGhostSettings *s = _llm_ghost_settings_new_from_string ("{}");
+  g_assert_false (llm_ghost_settings_get_max_lines (s, NULL));
+  g_object_unref (s);
+}
+
+static void
 test_parse_backend_params_interpolated (void)
 {
   g_setenv ("LLMGHOST_TEST_KEY", "sk-xyz", TRUE);
@@ -519,6 +537,8 @@ main (int argc, char *argv[])
   g_test_add_func ("/settings/parse/unknown-passthrough",    test_parse_unknown_backend_passthrough);
   g_test_add_func ("/settings/parse/debounce",               test_parse_debounce);
   g_test_add_func ("/settings/parse/debounce-absent",        test_parse_debounce_absent);
+  g_test_add_func ("/settings/parse/max-lines",              test_parse_max_lines);
+  g_test_add_func ("/settings/parse/max-lines-absent",       test_parse_max_lines_absent);
   g_test_add_func ("/settings/parse/params-interpolated",    test_parse_backend_params_interpolated);
   g_test_add_func ("/settings/parse/interpolate-in-arrays",  test_parse_interpolates_inside_arrays);
   g_test_add_func ("/settings/parse/underscore-ignored",     test_parse_underscore_key_ignored);

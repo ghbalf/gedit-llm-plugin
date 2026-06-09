@@ -249,6 +249,13 @@ llm_ghost_controller_set_debounce_ms (LlmGhostController *self, guint ms)
   self->debounce_ms = ms;
 }
 
+void
+llm_ghost_controller_set_max_lines (LlmGhostController *self, guint max_lines)
+{
+  g_return_if_fail (LLM_GHOST_IS_CONTROLLER (self));
+  self->max_lines = max_lines > 0 ? max_lines : 1;
+}
+
 /* ---- request flow -------------------------------------------------------- */
 
 static void
